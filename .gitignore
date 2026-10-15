@@ -1,1 +1,6 @@
-*.bundle
+# Maven build output
+target/
+
+# Old oversized bundles (kept on disk only, never committed)
+xray-freecam-anticheat-all.bundle
+download/anticheat-repo.bundle

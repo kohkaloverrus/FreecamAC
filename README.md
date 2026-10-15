@@ -1,11 +1,11 @@
 # XRay & Freecam AntiCheat
 
 [![Build](https://github.com/YOUR_USERNAME/XRayFreecamAntiCheat/actions/workflows/build.yml/badge.svg)](https://github.com/YOUR_USERNAME/XRayFreecamAntiCheat/actions/workflows/build.yml)
-![Minecraft](https://img.shields.io/badge/Minecraft-1.21.1-green)
+![Minecraft](https://img.shields.io/badge/Minecraft-1.21.11-green)
 ![Platform](https://img.shields.io/badge/platform-Paper-orange)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
-Античит-плагин для **Paper 1.21.1**, защищающий от читов **X-Ray** (текстурпаки со «сквозными» текстурами) и **Freecam** (полёт-наблюдатель вне тела игрока).
+Античит-плагин для **Paper 1.21.11**, защищающий от читов **X-Ray** (текстурпаки со «сквозными» текстурами) и **Freecam** (полёт-наблюдатель вне тела игрока).
 
 ## Принцип работы
 
@@ -52,7 +52,7 @@ mvn clean package
 
 ## Установка
 
-Скопируйте jar в папку `plugins/` сервера **Paper 1.21.1** и перезапустите сервер.
+Скопируйте jar в папку `plugins/` сервера **Paper 1.21.11** и перезапустите сервер.
 
 ## Команды
 

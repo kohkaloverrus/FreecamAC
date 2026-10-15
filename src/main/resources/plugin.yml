@@ -18,5 +18,8 @@ permissions:
     description: Allows management of the anti-cheat plugin
     default: op
   anticheat.bypass:
-    description: Allows bypassing the anti-cheat protection
+    description: Allows bypassing the anti-cheat protection (staff)
+    default: false
+  anticheat.spectate:
+    description: Player is treated as a spectator - never sees anti-cheat stone
     default: false

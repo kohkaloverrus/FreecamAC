@@ -31,7 +31,10 @@ public class BlockProtector {
      */
     public boolean shouldReplaceWithStone(Player player, Block block) {
         if (!plugin.isProtectionEnabled()) return false;
-        if (player.hasPermission("anticheat.bypass")) return false;
+        // Spectators (game mode SPECTATOR / flagged / bypass) never see stone:
+        // they legitimately fly through blocks, protection is only for
+        // survival/adventure/creative players whose client can be spoofed.
+        if (plugin.getSpectatorManager().isExempt(player)) return false;
 
         Material type = block.getType();
         if (type.isAir()) return false;

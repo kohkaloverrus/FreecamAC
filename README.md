@@ -21,7 +21,16 @@ mvn clean package
 
 ## Команды
 - `/anticheat enable|disable|status|reload` (anticheat.admin)
+- `/anticheat spectator add|remove|list [игрок] [секунды]` — пометить игрока спектатором
 
 ## Права
 - `anticheat.admin` — управление плагином
 - `anticheat.bypass` — обход защиты
+- `anticheat.spectate` — игрок считается спектатором, камень античита ему не показывается
+
+## Спектаторы (SPECTATOR)
+**Спектаторы никогда не видят камень античита** (`SpectatorManager`):
+- Игроки в режиме `GameMode.SPECTATOR` полностью исключены из санитизации — они легально пролетают сквозь блоки, подмена сломала бы им обзор.
+- Исключение применяется мгновенно при смене геймода (`PlayerGameModeChangeEvent`): кэш замен очищается и чанки вокруг игрока пересылаются без камня (hide/showChunk через Paper API).
+- Право `anticheat.spectate` помечает спектатора даже в креативе (для сторонних spectate-плагинов); отключается в конфиге `spectator.permission-exempt`.
+- Ручное управление: `/anticheat spectator add|remove|list`.

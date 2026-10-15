@@ -1,2 +1,3 @@
-*.bundle
+# binaries live in download/ (force-added)
 target/
+xray-freecam-anticheat-all.bundle

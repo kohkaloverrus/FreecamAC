@@ -1,41 +1,34 @@
-# Как выложить на GitHub
+# Публикация на GitHub
 
-## Быстрый способ (если код «не виден» на GitHub)
-Весь репозиторий упакован в один файл **`xray-freecam-anticheat.bundle`** (в корне проекта).
-Он содержит ВСЁ: исходный код, историю коммитов, README, CI. Его можно передать куда угодно
-(флешка, мессенджер, другой ПК) и восстановить полноценный git-репозиторий:
+Локальный git-репозиторий готов: 4 коммита, вся история и код.
+Осталось только создать репозиторий на github.com и запушить.
 
+## Быстрый способ (одна команда после создания репозитория)
 ```bash
-git clone xray-freecam-anticheat.bundle my-repo   # или: git unbundle
-cd my-repo
-git remote add origin https://github.com/<ВАШ_ЛОГИН>/<РЕПО>.git
+git remote add origin https://github.com/<ЛОГИН>/<РЕПО>.git
 git push -u origin master
 ```
 
-Готовый плагин (JAR) лежит рядом: `target/xray-freecam-anticheat-1.0.0.jar` —
-его можно прикрепить к GitHub Release вручную (Drag & Drop на странице Create a new release).
-
-Репозиторий полностью готов к публикации. Выполните эти шаги локально (или дайте токен — сделаю сам):
-
-## 1. Создайте пустой публичный репозиторий на github.com (без README)
-
-## 2. Добавьте remote и отправьте
+## Если нет доступа к папке /workspace — используйте bundle
+Файл `xray-freecam-anticheat-all.bundle` содержит ВЕСЬ репозиторий с историей:
 ```bash
-git remote add origin https://github.com/<ВАШ_ЛОГИН>/XRayFreecamAntiCheat.git
-git branch -M main
-git push -u origin main
+git clone xray-freecam-anticheat-all.bundle my-repo
+cd my-repo
+git remote add origin https://github.com/<ЛОГИН>/<РЕПО>.git
+git push -u origin master
 ```
 
-## 3. Альтернатива с токеном (для push из скрипта/CI)
-```bash
-git remote add origin https://x-access-token:GITHUB_TOKEN@github.com/<ВАШ_ЛОГИН>/XRayFreecamAntiCheat.git
-git push -u origin main
-```
-Токен: GitHub → Settings → Developer settings → Fine-grained tokens → разрешения "Contents: Read and write".
+## Создание репозитория на GitHub
+1. https://github.com/new
+2. Имя: `xray-freecam-anticheat`, видимость любая, **без** README/.gitignore/license (иначе истории разойдутся).
+3. Скопируйте выданный URL и выполните команды выше.
 
-## 4. Публикация jar через Release
-При пуше тега `v*` (например `git tag v1.0.0 && git push origin v1.0.0`)
-GitHub Actions (`.github/workflows/release.yml`) соберёт проект и создаст Release с jar-файлом.
+## Без git-клиента (web-upload)
+Создайте пустой репозиторий → Add file → Upload files → перетащите содержимое проекта
+(файлы из списка ниже, папку `target` не нужно):
+- pom.xml, README.md, LICENSE, CONTRIBUTING.md, SECURITY.md, .gitignore
+- src/main/java/com/anticheat/xrayfreecam/*.java (+ listeners/)
+- src/main/resources/plugin.yml, config.yml
+- .github/workflows/build.yml, release.yml; .github/ISSUE_TEMPLATE/*, PULL_REQUEST_TEMPLATE.md
 
-## 5. После первого пуша
-Замените `YOUR_USERNAME` в бейджах README.md на ваш логин.
+После пуша workflow build.yml соберёт JAR автоматически.

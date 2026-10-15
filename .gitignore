@@ -16,4 +16,4 @@ Thumbs.db
 build/
 out/
 dependency-reduced-pom.xml
-*.bundle
+# *.bundle — артефакты не коммитим (bundle лежит локально для переноса)

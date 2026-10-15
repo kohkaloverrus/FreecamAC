@@ -38,6 +38,18 @@ mvn clean package
 
 Готовый jar: `target/xray-freecam-anticheat-1.0.0.jar`.
 
+## Скачать готовый плагин
+
+Собранный JAR включён в репозиторий — скачивайте без сборки:
+
+| Файл | Описание |
+|---|---|
+| [`download/xray-freecam-anticheat-1.0.0.jar`](download/xray-freecam-anticheat-1.0.0.jar) | Готовый плагин — положить в папку `plugins/` сервера Paper 1.21.x |
+| [`download/xray-freecam-anticheat-v1.0.0.zip`](download/xray-freecam-anticheat-v1.0.0.zip) | Архив релиза (JAR + config.yml) |
+
+После загрузки на GitHub эти файлы также будут доступны как **Release Assets**
+(CI-workflow `release.yml` автоматически публикует тег `v*` с JAR).
+
 ## Установка
 
 Скопируйте jar в папку `plugins/` сервера **Paper 1.21.1** и перезапустите сервер.

@@ -1,1 +1,18 @@
 target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts (binaries are attached to GitHub Releases, not committed)
+build/
+out/
+dependency-reduced-pom.xml

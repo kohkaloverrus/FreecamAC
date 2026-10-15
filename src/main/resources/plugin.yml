@@ -1,0 +1,22 @@
+name: XRayFreecamAntiCheat
+version: 1.0.0
+main: com.anticheat.xrayfreecam.XRayFreecamPlugin
+api-version: '1.21'
+author: AntiCheat Team
+description: Protects against X-Ray and Freecam cheats by replacing non-visible blocks with stone
+website: https://example.com
+
+commands:
+  anticheat:
+    description: Manage the anti-cheat plugin
+    usage: /anticheat <enable|disable|status|reload>
+    permission: anticheat.admin
+    aliases: [ac, xray]
+
+permissions:
+  anticheat.admin:
+    description: Allows management of the anti-cheat plugin
+    default: op
+  anticheat.bypass:
+    description: Allows bypassing the anti-cheat protection
+    default: false

@@ -1,0 +1,10 @@
+name: Предложение
+description: Предложить новую функцию
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Описание предложения
+    validations:
+      required: true

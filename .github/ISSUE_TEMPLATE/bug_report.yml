@@ -1,0 +1,30 @@
+name: Баг-репорт
+description: Сообщить о проблеме с античитом
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Описание проблемы
+      placeholder: Что произошло?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия Paper
+      description: Например 1.21.1-build-XX
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Версия плагина
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи сервера
+      render: shell

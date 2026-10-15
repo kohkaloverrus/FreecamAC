@@ -13,7 +13,7 @@ body:
     id: version
     attributes:
       label: Версия Paper
-      description: Например 1.21.1-build-XX
+      description: Например 1.21.11-build-132
     validations:
       required: true
   - type: input

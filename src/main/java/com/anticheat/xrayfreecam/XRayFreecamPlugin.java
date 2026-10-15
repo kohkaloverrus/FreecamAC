@@ -13,7 +13,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * XRay & Freecam AntiCheat for Paper 1.21.1
+ * XRay & Freecam AntiCheat for Paper 1.21.11 (Java 25)
  *
  * Protects bases and ores from X-Ray texture packs and Freecam cheats by
  * replacing blocks outside the player's real line of sight with stone in

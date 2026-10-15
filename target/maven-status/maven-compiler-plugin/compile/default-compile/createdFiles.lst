@@ -1,0 +1,5 @@
+com/anticheat/xrayfreecam/SpectatorManager.class
+com/anticheat/xrayfreecam/BlockProtector.class
+com/anticheat/xrayfreecam/listeners/ChunkListener.class
+com/anticheat/xrayfreecam/XRayFreecamPlugin.class
+com/anticheat/xrayfreecam/VisitedBlocksManager.class

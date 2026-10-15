@@ -16,3 +16,4 @@ Thumbs.db
 build/
 out/
 dependency-reduced-pom.xml
+*.bundle

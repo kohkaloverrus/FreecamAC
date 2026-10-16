@@ -76,7 +76,12 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
         if (!plugin.isProtectionEnabled()) return;
         if (!plugin.getPacketEventsManager().isAvailable()) return;
 
-        PacketType type = event.getPacketType();
+        PacketType.Play.Server type;
+        try {
+            type = (PacketType.Play.Server) event.getPacketType();
+        } catch (Throwable t) {
+            return; // not a play-phase server packet
+        }
         if (type != PacketType.Play.Server.CHUNK_DATA
                 && type != PacketType.Play.Server.BLOCK_CHANGE
                 && type != PacketType.Play.Server.MULTI_BLOCK_CHANGE) {
@@ -98,12 +103,12 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
 
     private Player resolvePlayer(PacketSendEvent event) {
         try {
-            java.util.UUID uuid = event.getUser().getUniqueId();
+            java.util.UUID uuid = event.getUser().getUUID();
             if (uuid != null) {
                 Player p = org.bukkit.Bukkit.getPlayer(uuid);
                 if (p != null) return p;
             }
-            String name = event.getUser().getUsernameIfOnline();
+            String name = event.getUser().getName();
             if (name != null && !name.isEmpty()) {
                 return org.bukkit.Bukkit.getPlayerExact(name);
             }
@@ -146,8 +151,8 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
             }
 
             if (modified) {
-                // Mutated chunks are re-encoded automatically on write.
-                event.setChanged(true);
+                // Re-encode the mutated payload into the outgoing buffer.
+                wrapper.write();
             }
         } catch (Throwable t) {
             // Never break the packet pipeline because of sanitization errors.
@@ -242,13 +247,13 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
             if (isHiddenAlready(player, loc)) {
                 // Position was hidden in chunk data: keep it stone.
                 wrapper.setBlockID(stoneId);
-                event.setChanged(true);
+                wrapper.write();
                 return;
             }
             Block block = world.getBlockAt(pos.getX(), pos.getY(), pos.getZ());
             if (plugin.getBlockProtector().shouldReplaceWithStone(player, block)) {
                 wrapper.setBlockID(stoneId);
-                event.setChanged(true);
+                wrapper.write();
                 plugin.getPendingReplacements(player).put(loc, block.getType());
             }
         } catch (Throwable t) {
@@ -282,7 +287,7 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
                     plugin.getPendingReplacements(player).put(loc, block.getType());
                 }
             }
-            if (changed) event.setChanged(true);
+            if (changed) wrapper.write();
         } catch (Throwable t) {
             logFailure("multi-block-change", player, t);
         }

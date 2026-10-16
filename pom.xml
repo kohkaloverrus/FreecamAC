@@ -6,7 +6,7 @@
 
     <groupId>com.anticheat</groupId>
     <artifactId>xray-freecam-anticheat</artifactId>
-    <version>1.1.1</version>
+    <version>1.2.0</version>
     <packaging>jar</packaging>
 
     <name>XRayFreecamAntiCheat</name>
@@ -24,6 +24,10 @@
             <id>papermc</id>
             <url>https://repo.papermc.io/repository/maven-public/</url>
         </repository>
+        <repository>
+            <id>jitpack.io</id>
+            <url>https://jitpack.io</url>
+        </repository>
     </repositories>
 
     <dependencies>
@@ -31,6 +35,14 @@
             <groupId>io.papermc.paper</groupId>
             <artifactId>paper-api</artifactId>
             <version>1.21.11-R0.1-SNAPSHOT</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- PacketEvents API (compile-time only). At runtime the standalone
+             packetevents plugin must be installed on the server. -->
+        <dependency>
+            <groupId>com.github.retrooper.packetevents</groupId>
+            <artifactId>packetevents-spigot</artifactId>
+            <version>2.13.0</version>
             <scope>provided</scope>
         </dependency>
     </dependencies>

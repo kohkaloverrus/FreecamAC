@@ -1,6 +1,7 @@
 package com.anticheat.xrayfreecam;
 
 import org.bukkit.Chunk;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
@@ -56,6 +57,12 @@ public final class OcclusionEngine {
     public static final int ROOF_DEPTH = 5;
     /** Buried-pocket protection radius (walls all around, no F5 top-down). */
     public static final int POCKET_RADIUS = 12;
+    /**
+     * v1.3.2: absolute protection bubble around the player's feet. NOTHING
+     * inside it is ever replaced with stone — this guarantees normal mining
+     * and kills the v1.3.1 "stone everywhere near the player" regression.
+     */
+    public static final int SURFACE_EXEMPT = 16;
     /**
      * v1.3.1: "turn your head" rule from the spec — if a cell has NO clear
      * ray from the eyes to ANY of its 8 AABB corners, it is not visible even
@@ -152,127 +159,82 @@ public final class OcclusionEngine {
      * paying for chunk lookups on blocks that are obviously visible-safe.
      */
     public boolean shouldHide(Player player, Block block) {
+        return shouldHideAt(player, block.getWorld(),
+                block.getX(), block.getY(), block.getZ());
+    }
+
+    /**
+     * v1.3.2 core decision on raw coordinates (no Block object churn).
+     *
+     * ABSOLUTE RULES (never hide):
+     *  - any position with sky access -> the ENTIRE surface layer stays
+     *    completely natural: no stone blobs in grass/sand/gravel, none
+     *    behind trees or leaves (this was the v1.3.1 regression);
+     *  - any position within SURFACE_EXEMPT of the player's feet;
+     *  - any position the player has already visited.
+     * Only fully buried cells (continuous opaque roof >= ROOF_DEPTH above)
+     * are candidates for stone.
+     */
+    public boolean shouldHideAt(Player player, World w, int x, int y, int z) {
         if (!plugin.isProtectionEnabled()) return false;
         if (plugin.getSpectatorManager().isExempt(player)) return false;
+        if (y < w.getMinHeight() || y >= w.getMaxHeight()) return false;
 
-        Material type = block.getType();
-        // Stone itself needs no substitution; bedrock keeps terrain readable
-        // and prevents degenerate palettes at world floor.
-        if (type == Material.STONE || type == Material.BEDROCK) return false;
+        // Familiar area (player has been here) — never stone.
+        if (VisitedBlocksManager.isFamiliar(player, x, y, z)) return false;
 
-        org.bukkit.Location eye = player.getEyeLocation();
-        double dx = block.getX() + 0.5 - eye.getX();
-        double dy = block.getY() + 0.5 - eye.getY();
-        double dz = block.getZ() + 0.5 - eye.getZ();
-        double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        boolean nearPlayer = dist <= OPEN_RADIUS;
-
-        // Familiar area (player has been here) — never stone. Cheap int math.
-        if (VisitedBlocksManager.isFamiliar(player, block.getX(), block.getY(), block.getZ()))
+        Location loc = player.getLocation();
+        double fdx = x + 0.5 - loc.getX();
+        double fdz = z + 0.5 - loc.getZ();
+        double fdy = y + 0.5 - loc.getY();
+        if (fdx * fdx + fdz * fdz + fdy * fdy < SURFACE_EXEMPT * SURFACE_EXEMPT)
             return false;
 
-        if (nearPlayer && !isBuriedPocket(block)) {
-            // Normal gameplay zone. Exempt unless the turn-your-head rule
-            // applies: an occluded-from-every-angle cell within a small
-            // bubble becomes stone too (hides shaft air directly under the
-            // player's feet). Kept tiny + roof-gated so mining straight
-            // down into a lit, seen corridor is never affected.
-            boolean exempt = false;
-            if (dist <= 6.0) {
-                exempt = true;
-            } else if (!hasDeepRoof(block)) {
-                exempt = true; // surface/open area near player: never stone here
-            }
-            if (exempt) return false;
-        } else if (nearPlayer && dist > POCKET_RADIUS) {
-            return false;
-        }
+        // Buried gate FIRST (cheap vertical probe, cached): open-sky columns
+        // are rejected before any ray work -> zero cost on the surface.
+        if (!isBuried(w, x, y, z)) return false;
 
-        // Surface rule: anything with sky access stays as-is. This also
-        // guarantees no stone blobs above-ground behind trees/leaves.
-        // EXCEPT per the turn-your-head rule: an underground cell that is
-        // occluded from EVERY angle (all 8 corner rays blocked) becomes stone
-        // even inside OPEN_RADIUS — this is what hides shafts/caves that poke
-        // into the bubble behind walls while standing above them.
-        boolean sky = hasSkyAccess(block);
-        if (sky && !nearPlayer) return false;
-        if (sky && nearPlayer && dist > TURN_HEAD_RADIUS) return false;
-
-        // Transparent blocks: keep them unless embedded in an opaque wall.
-        if (!isOpaque(type)) {
-            boolean fluidOrAir = type == Material.AIR || type == Material.CAVE_AIR
-                    || type == Material.VOID_AIR || type == Material.WATER
-                    || type == Material.LAVA;
-            if (!fluidOrAir && !isEmbeddedInWall(block)) {
-                return false; // exposed window/glass stays a window
-            }
-        }
-
-        // Final oracle: "visible" means at least one AABB corner has a clear
-        // ray from the REAL eyes. If no corner can ever be seen (turning the
-        // head would reveal nothing), the cell is condemned to stone at ANY
-        // distance — including directly under the player's feet.
-        return !isVisible(player, block);
+        // The "turn your head" oracle: condemned only when NO corner of the
+        // cell can ever be seen from the REAL eyes (shaft/cave/base air and
+        // blocks behind walls). Distance-independent, but strictly gated by
+        // the buried check above, so it can never touch the surface.
+        return !isSectionVisible(player, w, x, y, z);
     }
 
-    /** Distance-based variant used by the packet pass (no Block object yet). */
-    public boolean shouldHideAt(Player player, World world, int x, int y, int z) {
-        if (y < world.getMinHeight() || y >= world.getMaxHeight()) return false;
-        Chunk ch = world.getChunkAt(x >> 4, z >> 4);
-        return shouldHide(player, ch.getBlock(x & 15, y, z & 15));
+    /** A cell is buried when it has a continuous opaque roof >= ROOF_DEPTH. */
+    private boolean isBuried(World w, int x, int y, int z) {
+        if (w.getBlockAt(x, y, z).getType() == Material.BEDROCK) return false;
+        for (int dy = 1; dy <= ROOF_DEPTH; dy++) {
+            if (!isOpaqueAt(w, x, y + dy, z)) return false;
+        }
+        return true;
     }
 
-    /** Inverse helper used by packet handlers. */
-    public boolean isVisible(Player player, Block block) {
-        Chunk ch = block.getChunk();
-        long key = sectionKey(ch.getX(), ch.getZ(), block.getY() >> 4);
+    /**
+     * Section-level visibility cache: one corner-ray evaluation decides the
+     * whole 16^3 section (v1.3.1 recomputed up to 8 rays PER BLOCK — the CPU
+     * bomb that killed the server). Entries expire lazily via stamps.
+     */
+    private boolean isSectionVisible(Player player, World w, int x, int y, int z) {
+        long key = sectionKey(x >> 4, z >> 4, y >> 4);
         Map<Long, Boolean> cache =
                 visibilityCache.computeIfAbsent(player, p -> new java.util.HashMap<>());
-        Boolean hit = cache.get(key);
+        Map<Long, Long> sm = stamps.computeIfAbsent(player, p -> new java.util.HashMap<>());
         long now = System.currentTimeMillis();
-        if (hit != null) return hit; // entries expire lazily on rewrite below
-        // TTL bookkeeping: store stamp alongside via a tiny wrapper-free trick:
-        // we simply overwrite stale keys opportunistically (stamp map).
-        if (isStale(cache, key, now)) cache.remove(key);
+        Long s = sm.get(key);
+        Boolean hit = cache.get(key);
+        if (hit != null && s != null && now - s < CACHE_TTL) return hit;
 
-        boolean visible = computeVisible(player, block);
+        boolean visible = computeVisible(player, w.getBlockAt(x, y, z));
 
-        if (!visible) {
-            // Only negative decisions are cached (positives change cheaply).
-            stamp(cache, key, now);
-            cache.put(key, Boolean.FALSE);
-        } else {
-            stamp(cache, key, now);
-            cache.put(key, Boolean.TRUE);
-        }
-        if (cache.size() > 4096) cache.clear();
+        cache.put(key, visible);
+        sm.put(key, now);
+        if (cache.size() > 4096) { cache.clear(); sm.clear(); }
         return visible;
     }
 
     // simple parallel stamp map (avoid allocating Entry objects per lookup)
     private final Map<Player, Map<Long, Long>> stamps = new java.util.WeakHashMap<>();
-
-    private boolean isStale(Map<Long, Boolean> cache, long key, long now) {
-        Player p = ownerOf(cache);
-        if (p == null) return false;
-        Long s = stamps.getOrDefault(p, java.util.Collections.emptyMap()).get(key);
-        return s != null && now - s > CACHE_TTL;
-    }
-
-    private void stamp(Map<Long, Boolean> cache, long key, long now) {
-        Player p = ownerOf(cache);
-        if (p == null) return;
-        stamps.computeIfAbsent(p, x -> new java.util.HashMap<>()).put(key, now);
-        Map<Long, Long> sm = stamps.get(p);
-        if (sm != null && sm.size() > 4096) sm.clear();
-    }
-
-    private Player ownerOf(Map<Long, Boolean> cache) {
-        for (Map.Entry<Player, Map<Long, Boolean>> e : visibilityCache.entrySet()) {
-            if (e.getValue() == cache) return e.getKey();
-        }
-        return null;
-    }
 
     // ------------------------------------------------------------------
     // Core raytracing
@@ -290,12 +252,6 @@ public final class OcclusionEngine {
             {maxX, maxY, minZ}, {maxX, minY, maxZ}, {minX, maxY, maxZ},
             {maxX, maxY, maxZ}
         };
-        java.util.Arrays.sort(cs, (a, b) -> Double.compare(
-                a[0]*a[0] + a[1]*a[1] + a[2]*a[2],
-                b[0]*b[0] + b[1]*b[1] + b[2]*b[2]));
-        // translate relative squares back to absolute ordering
-        // (sorting on eye-relative coords requires subtracting eye first)
-        // Re-sort properly:
         final double ex = eye.getX(), ey = eye.getY(), ez = eye.getZ();
         java.util.Arrays.sort(cs, (a, b) -> Double.compare(
                 sq(a[0]-ex)+sq(a[1]-ey)+sq(a[2]-ez),

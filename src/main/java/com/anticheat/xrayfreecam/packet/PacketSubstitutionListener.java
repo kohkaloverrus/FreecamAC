@@ -232,19 +232,20 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
             Entry ne = new Entry();
             ne.stamp = now;
 
-            if (dist > OcclusionEngine.OPEN_RADIUS) {
-                // Far area: blind hide unless the WHOLE section has sky access
-                // (surface terrain must stay natural-looking).
+            // v1.3.2 ABSOLUTE SURFACE GUARANTEE: a section that touches the
+            // sky or sits within the player's protection bubble is sent
+            // UNTOUCHED — no stone blobs on the surface, ever (v1.3.1 bug).
+            if (dist <= OcclusionEngine.SURFACE_EXEMPT + 16
+                    || sectionHasSky(world, baseX, baseZ, baseY)) {
+                // Near/surface: only fully-buried pockets inside this section
+                // may be sealed, and only via the cheap per-section probe.
+                decideNearSection(dp, lp, world, baseY, baseX, baseZ, player, eng, ne, stoneId);
+            } else {
+                // Far underground area: blind hide unless ANY sampled column
+                // reaches the sky (surface terrain stays natural-looking).
                 if (!sectionHasSky(world, baseX, baseZ, baseY)) {
                     ne.hideAll = true;
                 }
-            } else {
-                // v1.3.1: near sections also get the turn-your-head pass even
-                // when they touch the sky — a mineshaft ceiling poking into
-                // the bubble from below must seal to stone. decideNearSection
-                // consults eng.shouldHide per palette entry, which now applies
-                // the all-corners-occluded rule regardless of distance.
-                decideNearSection(dp, lp, world, baseY, baseX, baseZ, player, eng, ne, stoneId);
             }
             cache.put(key, ne);
             if (cache.size() > 8192) cache.clear();
@@ -255,8 +256,10 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
     }
 
     /**
-     * Near-section pass: only cells that could plausibly be seen through an
-     * opening get precise corner-ray tests; everything unseen becomes stone.
+     * Near/surface-section pass. A section is condemned to stone ONLY when
+     * every sampled non-air cell is buried under >= ROOF_DEPTH opaque blocks
+     * AND unseen from the real eyes (turn-your-head rule). Any surface cell,
+     * grass, tree, cave entrance or open shaft keeps the section untouched.
      */
     private void decideNearSection(DataPalette dp, ListPalette lp, World world,
                                    int baseY, int baseX, int baseZ,
@@ -266,8 +269,7 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
         int[] ids = readPaletteIds(lp);
         if (ids == null) return;
 
-        // Fast reject: uniform solid rock section (only stone/dirt/deepslate
-        // variants) needs no work — it already looks like the substitute.
+        // Fast reject: uniform solid rock section needs no work at all.
         boolean allOpaqueRock = true;
         for (int i = 1; i < size; i++) {
             Material m = materialForGlobalId(ids[i]);
@@ -276,14 +278,16 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
         }
         if (allOpaqueRock && ids[0] == 0 && !usesAirCells(dp)) return;
 
-        // Sample first occurrence position per palette index (bounded pass).
+        // Probe candidate cells: representative sample per palette index plus
+        // random air cells. Every probe must be BURIED + UNSEEN to condemn
+        // anything; a single surface/visible sample aborts the whole pass.
         int[] samples = new int[size];
         Arrays.fill(samples, -1);
         int found = 0;
         outer:
-        for (int y = 0; y < 16; y++) {
-            for (int z = 0; z < 16; z++) {
-                for (int x = 0; x < 16; x++) {
+        for (int y = 0; y < 16; y += 3) {
+            for (int z = 0; z < 16; z += 3) {
+                for (int x = 0; x < 16; x += 3) {
                     int idx = dp.get(x, y, z);
                     if (samples[idx] == -1) {
                         samples[idx] = (y << 8) | (z << 4) | x;
@@ -294,6 +298,7 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
         }
 
         boolean[] hide = new boolean[size];
+        int condemned = 0, probed = 0, aborted = 0;
         for (int i = 0; i < size; i++) {
             if (samples[i] == -1) continue;
             int id = ids[i];
@@ -303,34 +308,44 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
             if (m != null && isPlainRock(m) && i != 0) continue; // rock stays rock
             int p = samples[i];
             int x = p & 15, z = (p >> 4) & 15, y = (p >> 8) & 15;
-            Block block = world.getBlockAt(baseX + x, baseY + y, baseZ + z);
-            if (!acquireCheck()) break; // per-tick budget exhausted: leave visible
-            if (eng.shouldHide(player, block)) hide[i] = true;
+            if (!acquireCheck()) return; // budget exhausted: leave visible (safe)
+            probed++;
+            if (eng.shouldHideAt(player, world, baseX + x, baseY + y, baseZ + z)) {
+                hide[i] = true;
+                condemned++;
+            } else {
+                aborted++;
+            }
         }
-        e.hideIdx = hide;
 
-        // Air cells: hide individually when the sampled cave air is unseen.
-        // If most probes condemn the air, escalate to hiding the whole
-        // section (matches "behind the wall there is only stone").
-        if (samples[0] != -1) {
-            int condemned = 0, probed = 0;
-            java.util.Random rnd = sectionRandom;
-            for (int t = 0; t < 12; t++) {
-                int x = rnd.nextInt(16), z = rnd.nextInt(16), y = rnd.nextInt(16);
-                if (dp.get(x, y, z) != 0) continue;
-                probed++;
-                if (!acquireCheck()) break;
-                Block b = world.getBlockAt(baseX + x, baseY + y, baseZ + z);
-                if (eng.shouldHide(player, b)) condemned++;
+        // Air cells of near sections: probe randomly, same strict gate.
+        java.util.Random rnd = sectionRandom;
+        int airCondemned = 0, airProbed = 0;
+        for (int t = 0; t < 8; t++) {
+            int x = rnd.nextInt(16), z = rnd.nextInt(16), y = rnd.nextInt(16);
+            if (dp.get(x, y, z) != 0) continue;
+            if (!acquireCheck()) break;
+            airProbed++;
+            if (eng.shouldHideAt(player, world, baseX + x, baseY + y, baseZ + z)) {
+                airCondemned++;
+            } else {
+                aborted++;
             }
-            if (probed >= 4 && condemned * 4 >= probed * 3) {
-                e.hideAll = true;
-                e.hideIdx = null;
-            } else if (condemned > 0 && hide.length > 0) {
-                hide[0] = true; // hide just the air palette entry below
-                e.hideIdx = hide;
-                e.airToStone = true;
-            }
+        }
+
+        // Conservative escalation policy:
+        //  - ANY visible/surface sample -> do NOT hide the whole section;
+        //    keep only the individually condemned palette entries.
+        //  - ALL probes buried+unseen -> the section lies behind solid rock:
+        //    seal it completely (air included) — "за стеной только камень".
+        if (probed + airProbed < 4) return;
+        if (aborted == 0) {
+            e.hideAll = true;
+            e.hideIdx = null;
+        } else if (condemned > 0 || airCondemned * 4 >= Math.max(1, airProbed) * 3) {
+            if (airCondemned * 4 >= Math.max(1, airProbed) * 3) hide[0] = true;
+            e.hideIdx = hide;
+            e.airToStone = hide[0];
         }
     }
 

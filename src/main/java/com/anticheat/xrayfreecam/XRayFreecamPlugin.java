@@ -8,6 +8,9 @@ import org.bukkit.Material;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.HashMap;
@@ -21,7 +24,7 @@ import java.util.UUID;
  * replacing blocks outside the player's real line of sight with stone in
  * the data sent to the client. The real world is never modified.
  */
-public class XRayFreecamPlugin extends JavaPlugin {
+public class XRayFreecamPlugin extends JavaPlugin implements Listener {
 
     private boolean protectionEnabled = true;
     private double farDistance = 30.0;      // default protection radius
@@ -50,6 +53,7 @@ public class XRayFreecamPlugin extends JavaPlugin {
         this.freecamListener = new FreecamListener(this);
 
         getServer().getPluginManager().registerEvents(new ChunkListener(this), this);
+        getServer().getPluginManager().registerEvents(this, this);
         getServer().getPluginManager().registerEvents(occlusionManager, this);
         getServer().getPluginManager().registerEvents(freecamListener, this);
 
@@ -58,14 +62,24 @@ public class XRayFreecamPlugin extends JavaPlugin {
             occlusionManager.apply(p);
         }
 
-        getLogger().info("XRayFreecamAntiCheat v1.1.0 enabled. Protection radius: " + farDistance
+        getLogger().info("XRayFreecamAntiCheat v1.1.1 enabled. Protection radius: " + farDistance
                 + " blocks. Send radius: " + sendRadiusChunks + " chunks (unseen chunks are NOT sent to clients).");
     }
 
     @Override
     public void onDisable() {
         playerReplacements.clear();
+        pendingRefresh.clear();
+        freshlyLoaded.clear();
+        // Restore natural send distances so leaving servers won't be affected
+        // (defensive; per-player state does not persist anyway).
         getLogger().info("XRayFreecamAntiCheat disabled.");
+    }
+
+    /** Track every chunk load so refresh logic can skip brand-new chunks. */
+    @EventHandler
+    public void onChunkLoadTrack(ChunkLoadEvent event) {
+        noteChunkLoaded(event.getChunk().getWorld(), event.getChunk().getX(), event.getChunk().getZ());
     }
 
     private void loadConfig() {
@@ -253,5 +267,41 @@ public class XRayFreecamPlugin extends JavaPlugin {
      */
     public Map<Location, Material> getPendingReplacements(Player player) {
         return playerReplacements.computeIfAbsent(player.getUniqueId(), k -> new HashMap<>());
+    }
+
+    // ------------------------------------------------------------------
+    // v1.1.1 chunk-refresh throttle (prevents ChunkLoadEvent -> refreshChunk
+    // -> ChunkLoadEvent infinite loops that froze terrain loading forever)
+    // ------------------------------------------------------------------
+    private final java.util.Set<String> pendingRefresh = new java.util.HashSet<>();
+    private final java.util.Map<String, Long> freshlyLoaded = new java.util.HashMap<>();
+
+    private static String key(org.bukkit.World world, int cx, int cz) {
+        return world.getName() + ";" + cx + ";" + cz;
+    }
+
+    /** Called from ChunkListener.onChunkLoad for EVERY load event. */
+    public void noteChunkLoaded(org.bukkit.World world, int cx, int cz) {
+        freshlyLoaded.put(key(world, cx, cz), System.currentTimeMillis());
+        // keep the map bounded
+        if (freshlyLoaded.size() > 20000) {
+            long cutoff = System.currentTimeMillis() - 5000;
+            freshlyLoaded.values().removeIf(t -> t < cutoff);
+        }
+    }
+
+    /** True if this chunk had a fresh load event within the last second. */
+    public boolean wasFreshlyLoaded(org.bukkit.World world, int cx, int cz) {
+        Long t = freshlyLoaded.get(key(world, cx, cz));
+        return t != null && System.currentTimeMillis() - t < 1000L;
+    }
+
+    /** First caller within 5 seconds gets true (may schedule a refresh). */
+    public boolean markRefreshPending(org.bukkit.World world, int cx, int cz) {
+        return pendingRefresh.add(key(world, cx, cz));
+    }
+
+    public void clearRefreshPending(org.bukkit.World world, int cx, int cz) {
+        pendingRefresh.remove(key(world, cx, cz));
     }
 }

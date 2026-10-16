@@ -113,9 +113,7 @@ public class BlockProtector {
         int solidAbove = 0;
         for (int dy = 1; dy <= 10; dy++) {
             Block above = world.getBlockAt(block.getX(), block.getY() + dy, block.getZ());
-            if (above.getType().isAir() || !above.getType().isTransparent() == false) {
-                if (above.getType().isAir()) break;
-            }
+            if (above.getType().isAir()) break;
             if (!above.getType().isTransparent() && !above.getType().isAir()) {
                 solidAbove++;
             } else {

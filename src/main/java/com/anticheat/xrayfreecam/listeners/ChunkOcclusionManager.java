@@ -134,6 +134,13 @@ public class ChunkOcclusionManager implements Listener {
     @EventHandler
     public void onChunkLoad(ChunkLoadEvent event) {
         if (!plugin.isProtectionEnabled()) return;
+        // v1.2.0 hotfix: with PacketEvents block substitution active, chunk
+        // packets are sanitized in-flight (see PacketSubstitutionListener).
+        // The old per-block scan here ran 65k+ shouldReplaceWithStone()
+        // raytraces per loaded chunk PER PLAYER on the main thread and was
+        // the primary cause of the server-wide lag / join timeouts. Skip it.
+        if (plugin.getPacketEventsManager().isAvailable()) return;
+
         final Chunk chunk = event.getChunk();
         final World world = chunk.getWorld();
 

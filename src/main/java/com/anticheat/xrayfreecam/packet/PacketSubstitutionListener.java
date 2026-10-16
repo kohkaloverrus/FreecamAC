@@ -58,13 +58,43 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
     /** Hard cap on visibility tests per 16x16x16 section. */
     private static final int MAX_CHECKS = 64;
 
+    /**
+     * Safety budget for the whole server tick. The old v1.2.0 build ran an
+     * unbounded number of expensive line-of-sight raytraces inside every
+     * outgoing chunk packet, which froze the main thread (server lagged
+     * badly, nobody could join). Once this many checks have run in the
+     * current tick, remaining packets pass through unsanitized until the
+     * next tick — chunks are additionally coarsely occluded by the
+     * v1.1.1 send-distance logic, so this degrades protection quality,
+     * never server availability.
+     */
+    private static final int TICK_BUDGET = 256;
+
     private final XRayFreecamPlugin plugin;
 
     /** Cached stone state per client version (id lookup is not free). */
     private final Map<ClientVersion, WrappedBlockState> stoneCache = new HashMap<>();
 
+    /** global block id -> Bukkit Material, cached (registry lookups are hot). */
+    private final Map<Integer, Material> materialCache = new HashMap<>();
+
     /** Cached reflective handle to ListPalette's backing id array. */
     private volatile Field listPaletteDataField;
+
+    // --- per-tick check budget ---
+    private long budgetWindow = -1L;
+    private int budgetUsed = 0;
+
+    private boolean acquireCheck() {
+        long tick = plugin.getServer().getCurrentTick();
+        if (tick != budgetWindow) {
+            budgetWindow = tick;
+            budgetUsed = 0;
+        }
+        if (budgetUsed >= TICK_BUDGET) return false;
+        budgetUsed++;
+        return true;
+    }
 
     public PacketSubstitutionListener(XRayFreecamPlugin plugin) {
         super(PacketListenerPriority.HIGHEST);
@@ -122,6 +152,12 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
     // ------------------------------------------------------------------
     private void handleChunkData(PacketSendEvent event, Player player) {
         try {
+            // Cheap pre-check: only bother parsing the (large) chunk payload
+            // when this section range could plausibly contain hidden blocks.
+            // The tick budget also protects the main thread from being frozen
+            // by a burst of chunk packets (e.g. many players joining at once).
+            if (!acquireCheck()) return;
+
             WrapperPlayServerChunkData wrapper = new WrapperPlayServerChunkData(event);
             var column = wrapper.getColumn();
             if (column == null || !column.isFullChunk()) return;
@@ -175,6 +211,30 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
         int size = listPalette.size();
         if (size <= 1) return false;
 
+        // Fast rejection: if NO palette entry is a candidate for hiding
+        // (air, stone, bedrock, water and other non-protected blocks), the
+        // section is left completely untouched — zero raytraces. This is the
+        // case for the overwhelming majority of sections on a normal server
+        // and was the main source of v1.2.0's tick-freezing lag.
+        int[] ids = readPaletteIds(listPalette);
+        if (ids == null) return false;
+        boolean anyCandidate = false;
+        for (int idx = 1; idx < size; idx++) {
+            int id = ids[idx];
+            if (id == 0) continue;
+            Material m = materialForGlobalId(id);
+            // Candidate = anything that is not air, not stone itself and not
+            // transparent (glass, leaves, water... stay visible anyway by the
+            // protector's rules). This keeps every ordinary terrain section
+            // (stone/deepslate/dirt/air) at zero cost.
+            if (m != null && m.isSolid() && !m.isTransparent() && m != Material.STONE) {
+                anyCandidate = true;
+                break;
+            }
+        }
+        if (!anyCandidate) return false;
+
+        int stoneId = stone.getGlobalId();
         int[] samples = new int[size]; // local index of first occurrence, -1 = unseen
         java.util.Arrays.fill(samples, -1);
 
@@ -195,16 +255,15 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
             }
         }
 
-        int stoneId = stone.getGlobalId();
-        int[] ids = readPaletteIds(listPalette);
-        if (ids == null) return false;
-
         boolean changed = false;
         Map<Location, Material> pending = plugin.getPendingReplacements(player);
         for (int idx = 1; idx < size; idx++) {
             if (samples[idx] == -1) continue; // entry unused in section
             int currentId = ids[idx];
             if (currentId == 0 || currentId == stoneId) continue;
+            Material mat = materialForGlobalId(currentId);
+            if (mat == null || !mat.isSolid() || mat.isTransparent()) continue;
+            if (!acquireCheck()) break; // per-tick budget exhausted
             int p = samples[idx];
             int x = p & 15, z = (p >> 4) & 15, y = (p >> 8) & 15;
             Block block = world.getBlockAt(baseX + x, baseY + y, baseZ + z);
@@ -242,19 +301,26 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
             Vector3i pos = wrapper.getBlockPosition();
             World world = player.getWorld();
             Location loc = new Location(world, pos.getX(), pos.getY(), pos.getZ());
-            int stoneId = stoneIdFor(event.getUser().getClientVersion());
 
             if (isHiddenAlready(player, loc)) {
                 // Position was hidden in chunk data: keep it stone.
+                int stoneId = stoneIdFor(event.getUser().getClientVersion());
                 wrapper.setBlockID(stoneId);
                 wrapper.write();
                 return;
             }
             Block block = world.getBlockAt(pos.getX(), pos.getY(), pos.getZ());
-            if (plugin.getBlockProtector().shouldReplaceWithStone(player, block)) {
-                wrapper.setBlockID(stoneId);
-                wrapper.write();
-                plugin.getPendingReplacements(player).put(loc, block.getType());
+            Material type = block.getType();
+            // Cheap filter first: transparent/air blocks are never hidden by
+            // the protector anyway — skip the expensive raytrace entirely.
+            if (!type.isAir() && type.isSolid() && !type.isTransparent()) {
+                if (!acquireCheck()) return; // per-tick budget exhausted
+                if (plugin.getBlockProtector().shouldReplaceWithStone(player, block)) {
+                    int stoneId = stoneIdFor(event.getUser().getClientVersion());
+                    wrapper.setBlockID(stoneId);
+                    wrapper.write();
+                    plugin.getPendingReplacements(player).put(loc, type);
+                }
             }
         } catch (Throwable t) {
             logFailure("block-change", player, t);
@@ -268,7 +334,6 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
             int baseX = chunkPos.getX() << 4;
             int baseZ = chunkPos.getZ() << 4;
             World world = player.getWorld();
-            int stoneId = stoneIdFor(event.getUser().getClientVersion());
             boolean changed = false;
             for (var record : wrapper.getBlocks()) {
                 int wx = baseX + record.getX();
@@ -276,15 +341,20 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
                 int wz = baseZ + record.getZ();
                 Location loc = new Location(world, wx, wy, wz);
                 if (isHiddenAlready(player, loc)) {
+                    int stoneId = stoneIdFor(event.getUser().getClientVersion());
                     record.setBlockId(stoneId);
                     changed = true;
                     continue;
                 }
                 Block block = world.getBlockAt(wx, wy, wz);
+                Material type = block.getType();
+                if (type.isAir() || !type.isSolid() || type.isTransparent()) continue;
+                if (!acquireCheck()) break; // per-tick budget exhausted
                 if (plugin.getBlockProtector().shouldReplaceWithStone(player, block)) {
+                    int stoneId = stoneIdFor(event.getUser().getClientVersion());
                     record.setBlockId(stoneId);
                     changed = true;
-                    plugin.getPendingReplacements(player).put(loc, block.getType());
+                    plugin.getPendingReplacements(player).put(loc, type);
                 }
             }
             if (changed) wrapper.write();
@@ -321,4 +391,28 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
         if (s != null) stoneCache.put(cv, s);
         return s;
     }
+
+    /**
+     * Maps a palette global block id to a Bukkit Material (cached). Returns
+     * null for unknown/invalid ids so callers treat them as non-candidates.
+     */
+    private Material materialForGlobalId(int globalId) {
+        Material cached = materialCache.get(globalId);
+        if (cached != null) return cached == MISSING ? null : cached;
+        Material result = null;
+        try {
+            WrappedBlockState state = WrappedBlockState.getByGlobalId(globalId);
+            if (state != null && state.getType() != null) {
+                String key = state.getType().getName(); // minecraft:xxx
+                String plain = key.startsWith("minecraft:") ? key.substring(10) : key;
+                result = Material.matchMaterial(plain.toUpperCase(java.util.Locale.ROOT));
+            }
+        } catch (Throwable ignored) {
+        }
+        materialCache.put(globalId, result != null ? result : MISSING);
+        return result;
+    }
+
+    /** Sentinel meaning "this id has no Bukkit Material" (negative cache). */
+    private static final Material MISSING = Material.AIR;
 }

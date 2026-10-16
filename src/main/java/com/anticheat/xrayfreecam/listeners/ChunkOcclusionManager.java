@@ -84,13 +84,17 @@ public class ChunkOcclusionManager implements Listener {
         } else {
             int clientVd = safeClientViewDistance(player);
             if (clientVd < 0) clientVd = plugin.getServer().getViewDistance();
-            target = Math.min(plugin.getSendRadiusChunks(), clientVd);
-            // Protection radius must not be SMALLER than the client request,
-            // otherwise the client would hang loading invisible chunks.
-            // In that case we do not clamp at all.
-            if (target >= clientVd) {
-                return;
-            }
+            // v1.3.1: more rendered chunks — never shrink below the client's
+            // own request; only EXTEND it up to the configured send radius.
+            // Shrinking caused "world ends after a few chunks" complaints and
+            // did not add security anyway, because the packet sanitizer now
+            // turns EVERY occluded cell (all-angles-blocked, turn-your-head
+            // rule) into stone at any distance inside the sent view. So the
+            // freecam camera sees solid stone everywhere beyond the real
+            // player's actual sightlines, even in faraway chunks.
+            target = Math.max(clientVd, plugin.getSendRadiusChunks());
+            int serverMax = plugin.getServer().getViewDistance();
+            if (serverMax > 0) target = Math.min(target, Math.max(serverMax, clientVd));
         }
 
         try {

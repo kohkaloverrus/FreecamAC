@@ -56,6 +56,14 @@ public final class OcclusionEngine {
     public static final int ROOF_DEPTH = 5;
     /** Buried-pocket protection radius (walls all around, no F5 top-down). */
     public static final int POCKET_RADIUS = 12;
+    /**
+     * v1.3.1: "turn your head" rule from the spec — if a cell has NO clear
+     * ray from the eyes to ANY of its 8 AABB corners, it is not visible even
+     * in principle (rotating the camera cannot reveal it), so it becomes
+     * stone regardless of distance. This seals cave/shaft air that pokes
+     * into the OPEN_RADIUS bubble behind walls.
+     */
+    public static final int TURN_HEAD_RADIUS = OPEN_RADIUS;
     /** Column sky-scan depth cap (overworld height ~384, plenty). */
     private static final int SKY_SCAN_LIMIT = 200;
     /** Section decision cache TTL, ms. */
@@ -163,12 +171,32 @@ public final class OcclusionEngine {
         if (VisitedBlocksManager.isFamiliar(player, block.getX(), block.getY(), block.getZ()))
             return false;
 
-        if (nearPlayer && !isBuriedPocket(block)) return false; // normal gameplay zone
-        if (nearPlayer && dist > POCKET_RADIUS) return false;
+        if (nearPlayer && !isBuriedPocket(block)) {
+            // Normal gameplay zone. Exempt unless the turn-your-head rule
+            // applies: an occluded-from-every-angle cell within a small
+            // bubble becomes stone too (hides shaft air directly under the
+            // player's feet). Kept tiny + roof-gated so mining straight
+            // down into a lit, seen corridor is never affected.
+            boolean exempt = false;
+            if (dist <= 6.0) {
+                exempt = true;
+            } else if (!hasDeepRoof(block)) {
+                exempt = true; // surface/open area near player: never stone here
+            }
+            if (exempt) return false;
+        } else if (nearPlayer && dist > POCKET_RADIUS) {
+            return false;
+        }
 
         // Surface rule: anything with sky access stays as-is. This also
         // guarantees no stone blobs above-ground behind trees/leaves.
-        if (hasSkyAccess(block)) return false;
+        // EXCEPT per the turn-your-head rule: an underground cell that is
+        // occluded from EVERY angle (all 8 corner rays blocked) becomes stone
+        // even inside OPEN_RADIUS — this is what hides shafts/caves that poke
+        // into the bubble behind walls while standing above them.
+        boolean sky = hasSkyAccess(block);
+        if (sky && !nearPlayer) return false;
+        if (sky && nearPlayer && dist > TURN_HEAD_RADIUS) return false;
 
         // Transparent blocks: keep them unless embedded in an opaque wall.
         if (!isOpaque(type)) {
@@ -180,7 +208,10 @@ public final class OcclusionEngine {
             }
         }
 
-        // Final oracle: direct line of sight -> leave visible.
+        // Final oracle: "visible" means at least one AABB corner has a clear
+        // ray from the REAL eyes. If no corner can ever be seen (turning the
+        // head would reveal nothing), the cell is condemned to stone at ANY
+        // distance — including directly under the player's feet.
         return !isVisible(player, block);
     }
 

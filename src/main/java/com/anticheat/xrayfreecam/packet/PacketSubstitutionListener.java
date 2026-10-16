@@ -239,6 +239,11 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
                     ne.hideAll = true;
                 }
             } else {
+                // v1.3.1: near sections also get the turn-your-head pass even
+                // when they touch the sky — a mineshaft ceiling poking into
+                // the bubble from below must seal to stone. decideNearSection
+                // consults eng.shouldHide per palette entry, which now applies
+                // the all-corners-occluded rule regardless of distance.
                 decideNearSection(dp, lp, world, baseY, baseX, baseZ, player, eng, ne, stoneId);
             }
             cache.put(key, ne);

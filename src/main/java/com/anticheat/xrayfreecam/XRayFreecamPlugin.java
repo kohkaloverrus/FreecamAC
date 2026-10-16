@@ -115,7 +115,7 @@ public class XRayFreecamPlugin extends JavaPlugin implements Listener {
         protectionEnabled = getConfig().getBoolean("protection.enabled", true);
         farDistance = getConfig().getDouble("protection.far-distance", 30.0);
         viewDistance = getConfig().getInt("protection.view-distance-chunks", 8);
-        sendRadiusChunks = Math.max(2, Math.min(12, getConfig().getInt("protection.send-radius-chunks", 4)));
+        sendRadiusChunks = Math.max(2, Math.min(12, getConfig().getInt("protection.send-radius-chunks", 12)));
         logFreecamAttempts = getConfig().getBoolean("logging.log-freecam-attempts", true);
         spectatePermissionEnabled = getConfig().getBoolean("spectator.permission-exempt", true);
     }

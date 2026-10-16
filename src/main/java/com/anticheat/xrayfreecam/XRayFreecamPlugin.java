@@ -1,6 +1,8 @@
 package com.anticheat.xrayfreecam;
 
 import com.anticheat.xrayfreecam.listeners.ChunkListener;
+import com.anticheat.xrayfreecam.listeners.ChunkOcclusionManager;
+import com.anticheat.xrayfreecam.listeners.FreecamListener;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.command.Command;
@@ -24,9 +26,13 @@ public class XRayFreecamPlugin extends JavaPlugin {
     private boolean protectionEnabled = true;
     private double farDistance = 30.0;      // default protection radius
     private int viewDistance = 8;           // chunks
+    private int sendRadiusChunks = 4;       // v1.1.0: max chunks SENT to a protected client
+    private boolean logFreecamAttempts = true;
     private boolean spectatePermissionEnabled = true;
     private BlockProtector blockProtector;
     private SpectatorManager spectatorManager;
+    private ChunkOcclusionManager occlusionManager;
+    private FreecamListener freecamListener;
 
     // Per-player map of sanitized (location -> original material) replacements
     // that were applied to outgoing chunk data. Cleared on rejoin because
@@ -40,10 +46,20 @@ public class XRayFreecamPlugin extends JavaPlugin {
 
         this.blockProtector = new BlockProtector(this);
         this.spectatorManager = new SpectatorManager(this);
+        this.occlusionManager = new ChunkOcclusionManager(this);
+        this.freecamListener = new FreecamListener(this);
 
         getServer().getPluginManager().registerEvents(new ChunkListener(this), this);
+        getServer().getPluginManager().registerEvents(occlusionManager, this);
+        getServer().getPluginManager().registerEvents(freecamListener, this);
 
-        getLogger().info("XRayFreecamAntiCheat enabled. Protection radius: " + farDistance + " blocks.");
+        // Apply send-distance occlusion to everyone already online (reload)
+        for (Player p : getServer().getOnlinePlayers()) {
+            occlusionManager.apply(p);
+        }
+
+        getLogger().info("XRayFreecamAntiCheat v1.1.0 enabled. Protection radius: " + farDistance
+                + " blocks. Send radius: " + sendRadiusChunks + " chunks (unseen chunks are NOT sent to clients).");
     }
 
     @Override
@@ -56,7 +72,21 @@ public class XRayFreecamPlugin extends JavaPlugin {
         protectionEnabled = getConfig().getBoolean("protection.enabled", true);
         farDistance = getConfig().getDouble("protection.far-distance", 30.0);
         viewDistance = getConfig().getInt("protection.view-distance-chunks", 8);
+        sendRadiusChunks = Math.max(2, Math.min(12, getConfig().getInt("protection.send-radius-chunks", 4)));
+        logFreecamAttempts = getConfig().getBoolean("logging.log-freecam-attempts", true);
         spectatePermissionEnabled = getConfig().getBoolean("spectator.permission-exempt", true);
+    }
+
+    public ChunkOcclusionManager getOcclusionManager() {
+        return occlusionManager;
+    }
+
+    public int getSendRadiusChunks() {
+        return sendRadiusChunks;
+    }
+
+    public boolean isLogFreecamAttempts() {
+        return logFreecamAttempts;
     }
 
     public boolean isSpectatePermissionEnabled() {
@@ -94,8 +124,27 @@ public class XRayFreecamPlugin extends JavaPlugin {
                 break;
             case "reload":
                 reload();
+                // Re-apply occlusion to everyone after config change
+                for (Player p : getServer().getOnlinePlayers()) {
+                    occlusionManager.apply(p);
+                }
                 sender.sendMessage("§eКонфиг перезагружен");
                 break;
+            case "occlude":
+            case "apply": {
+                // /anticheat occlude [player] — force re-sync send radius + chunks
+                Player target = resolveTarget(sender, args, 1);
+                if (target == null && args.length >= 1 && !(sender instanceof Player)) break;
+                if (target != null) {
+                    occlusionManager.resync(target);
+                    sender.sendMessage("§aОкклюзия применена к " + target.getName()
+                            + " (send radius: " + getSendRadiusChunks() + " чанков)");
+                } else {
+                    for (Player p : getServer().getOnlinePlayers()) occlusionManager.resync(p);
+                    sender.sendMessage("§aОкклюзия применена ко всем игрокам");
+                }
+                break;
+            }
             case "spectator":
             case "spec":
                 // /anticheat spectator <add|remove|list> [player] [seconds]
@@ -143,8 +192,9 @@ public class XRayFreecamPlugin extends JavaPlugin {
             case "status":
             default:
                 sender.sendMessage("§7Защита: " + (protectionEnabled ? "§aвкл" : "§cвыкл"));
-                sender.sendMessage("§7Радиус: §f" + farDistance + " блоков");
-                sender.sendMessage("§7View distance: §f" + viewDistance + " чанков");
+                sender.sendMessage("§7Радиус камня: §f" + farDistance + " блоков");
+                sender.sendMessage("§7Send radius (окклюзия): §f" + sendRadiusChunks + " чанков — вне его чанки НЕ отсылаются клиенту");
+                sender.sendMessage("§7View distance сервера: §f" + viewDistance + " чанков");
                 sender.sendMessage("§7Спектаторы exempt: §fGameMode.SPECTATOR + флаг anticheat.spectate");
                 break;
         }

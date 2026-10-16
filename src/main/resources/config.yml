@@ -11,6 +11,12 @@ protection:
   # Server view distance in chunks used to limit chunk scanning
   view-distance-chunks: 8
 
+  # v1.1.0: OCCLUSION — maximum number of chunks SENT to a protected player's
+  # client (setSendViewDistance). Anything beyond this radius is never
+  # transmitted at all, so freecam flying out of the body sees nothing but
+  # empty/unloaded world. 4 chunks = ~64 blocks. Spectators/staff unaffected.
+  send-radius-chunks: 4
+
   # Behind solid walls: protect starting at this horizontal distance
   wall-horizontal-distance: 5
 

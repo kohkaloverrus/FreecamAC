@@ -34,6 +34,7 @@ public class XRayFreecamPlugin extends JavaPlugin implements Listener {
     private boolean spectatePermissionEnabled = true;
     private BlockProtector blockProtector;
     private SpectatorManager spectatorManager;
+    private com.anticheat.xrayfreecam.packet.PacketEventsManager packetEventsManager;
     private ChunkOcclusionManager occlusionManager;
     private FreecamListener freecamListener;
 
@@ -47,10 +48,17 @@ public class XRayFreecamPlugin extends JavaPlugin implements Listener {
         saveDefaultConfig();
         loadConfig();
 
+        // v1.2.0: PacketEvents must be initialized BEFORE anything else so
+        // its Netty handlers are injected before any player connects.
+        this.packetEventsManager = new com.anticheat.xrayfreecam.packet.PacketEventsManager(this);
+        this.packetEventsManager.init();
+
         this.blockProtector = new BlockProtector(this);
         this.spectatorManager = new SpectatorManager(this);
         this.occlusionManager = new ChunkOcclusionManager(this);
         this.freecamListener = new FreecamListener(this);
+
+        this.packetEventsManager.registerListeners();
 
         getServer().getPluginManager().registerEvents(new ChunkListener(this), this);
         getServer().getPluginManager().registerEvents(this, this);
@@ -62,12 +70,15 @@ public class XRayFreecamPlugin extends JavaPlugin implements Listener {
             occlusionManager.apply(p);
         }
 
-        getLogger().info("XRayFreecamAntiCheat v1.1.1 enabled. Protection radius: " + farDistance
+        getLogger().info("XRayFreecamAntiCheat v1.2.0 enabled. Protection radius: " + farDistance
                 + " blocks. Send radius: " + sendRadiusChunks + " chunks (unseen chunks are NOT sent to clients).");
     }
 
     @Override
     public void onDisable() {
+        if (packetEventsManager != null) {
+            packetEventsManager.shutdown();
+        }
         playerReplacements.clear();
         pendingRefresh.clear();
         freshlyLoaded.clear();
@@ -210,6 +221,9 @@ public class XRayFreecamPlugin extends JavaPlugin implements Listener {
                 sender.sendMessage("§7Send radius (окклюзия): §f" + sendRadiusChunks + " чанков — вне его чанки НЕ отсылаются клиенту");
                 sender.sendMessage("§7View distance сервера: §f" + viewDistance + " чанков");
                 sender.sendMessage("§7Спектаторы exempt: §fGameMode.SPECTATOR + флаг anticheat.spectate");
+                sender.sendMessage("§7Подмена блоков (PacketEvents): §f"
+                        + (packetEventsManager != null && packetEventsManager.isAvailable()
+                           ? "АКТИВНА (chunk data + block changes)" : "НЕДОСТУПНА (только окклюзия)"));
                 break;
         }
         return true;
@@ -247,6 +261,10 @@ public class XRayFreecamPlugin extends JavaPlugin implements Listener {
 
     public int getViewDistance() {
         return viewDistance;
+    }
+
+    public com.anticheat.xrayfreecam.packet.PacketEventsManager getPacketEventsManager() {
+        return packetEventsManager;
     }
 
     public BlockProtector getBlockProtector() {

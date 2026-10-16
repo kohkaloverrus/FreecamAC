@@ -1,0 +1,39 @@
+# XRay & Freecam AntiCheat Configuration
+
+protection:
+  # Main toggle for the anti-cheat protection
+  enabled: true
+
+  # Distance in blocks beyond which unseen blocks are replaced with stone
+  # (spec: "камень может появляться только дальше 30 блоков")
+  far-distance: 30.0
+
+  # Server view distance in chunks used to limit chunk scanning
+  view-distance-chunks: 8
+
+  # v1.1.0: OCCLUSION — maximum number of chunks SENT to a protected player's
+  # client (setSendViewDistance). Anything beyond this radius is never
+  # transmitted at all, so freecam flying out of the body sees nothing but
+  # empty/unloaded world. 4 chunks = ~64 blocks. Spectators/staff unaffected.
+  send-radius-chunks: 4
+
+  # Behind solid walls: protect starting at this horizontal distance
+  wall-horizontal-distance: 5
+
+  # Behind solid walls: protect up to this vertical distance downward
+  wall-vertical-distance: 10
+
+logging:
+  # Log detected freecam-like behaviour (player moving without proper packets)
+  log-freecam-attempts: true
+
+spectator:
+  # Players in GameMode.SPECTATOR NEVER see the anti-cheat stone — they can
+  # legitimately fly through blocks, so sanitization is skipped for them.
+  # This is always active and cannot be disabled (vanilla spectator safety).
+  exempt-spectators: true
+
+  # Also treat players with permission "anticheat.spectate" as spectators
+  # (e.g. staff using a third-party spectate plugin that keeps them in
+  # creative/survival while roaming through walls).
+  permission-exempt: true

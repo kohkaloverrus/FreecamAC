@@ -1,9 +1,9 @@
 name: XRayFreecamAntiCheat
-version: 1.1.1
+version: 1.2.0
 main: com.anticheat.xrayfreecam.XRayFreecamPlugin
 api-version: '1.21'
 author: AntiCheat Team
-description: Protects against X-Ray and Freecam cheats - unseen areas are never sent to the client at all (v1.1.1)
+description: Protects against X-Ray and Freecam cheats - outgoing chunk/block packets are rewritten via PacketEvents so unseen blocks never reach the client (v1.2.0)
 website: https://example.com
 
 commands:

@@ -37,6 +37,19 @@ public class VisitedBlocksManager {
     }
 
     /**
+     * Coordinate-based fast path (no Block allocation): familiar = within 16
+     * blocks of where the player physically stands. Spec: "камень не может
+     * появляться если игрок побывал в этом месте".
+     */
+    public static boolean isFamiliar(Player player, int x, int y, int z) {
+        Location pLoc = player.getLocation();
+        double dx = x + 0.5 - pLoc.getX();
+        double dy = y + 0.5 - pLoc.getY();
+        double dz = z + 0.5 - pLoc.getZ();
+        return dx * dx + dy * dy + dz * dz < 256.0; // 16^2
+    }
+
+    /**
      * Surface leaves/tree check: don't place stone behind leaves or trees on surface.
      * Returns true if block is above surface level and near vegetation.
      */

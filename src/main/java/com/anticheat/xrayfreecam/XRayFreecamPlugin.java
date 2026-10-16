@@ -33,6 +33,7 @@ public class XRayFreecamPlugin extends JavaPlugin implements Listener {
     private boolean logFreecamAttempts = true;
     private boolean spectatePermissionEnabled = true;
     private BlockProtector blockProtector;
+    private OcclusionEngine occlusionEngine;
     private SpectatorManager spectatorManager;
     private com.anticheat.xrayfreecam.packet.PacketEventsManager packetEventsManager;
     private ChunkOcclusionManager occlusionManager;
@@ -57,6 +58,7 @@ public class XRayFreecamPlugin extends JavaPlugin implements Listener {
         this.packetEventsManager.init();
 
         this.blockProtector = new BlockProtector(this);
+        this.occlusionEngine = new OcclusionEngine(this);
         this.spectatorManager = new SpectatorManager(this);
         this.occlusionManager = new ChunkOcclusionManager(this);
         this.freecamListener = new FreecamListener(this);
@@ -80,10 +82,11 @@ public class XRayFreecamPlugin extends JavaPlugin implements Listener {
             packetEventsManager.reportErrors();
         }, 20L * 60, 20L * 60);
 
-        getLogger().info("XRayFreecamAntiCheat v1.2.2 enabled. Ores & unseen cave air below the"
-                + " player are replaced with stone in outgoing packets; everything beyond "
-                + HIDE_RADIUS_BLOCKS + " blocks of the real position is hidden wholesale"
-                + " (freecam sees nothing). Send radius: " + sendRadiusChunks + " chunks.");
+        getLogger().info("XRayFreecamAntiCheat v1.3.0 enabled. Everything the client cannot see from the "
+                + "player\u0027s real eyes is sent as STONE (caves, shafts, bases, ores, entities\u0027 surroundings)."
+                + " Unseen areas beyond " + OcclusionEngine.OPEN_RADIUS + " blocks hide blindly; buried pockets"
+                + " protect from " + OcclusionEngine.POCKET_RADIUS + ". Sky-exposed terrain is never touched."
+                + " Send radius: " + sendRadiusChunks + " chunks.");
     }
 
     /** Radius (blocks) within which near-position data is scanned precisely. */
@@ -285,11 +288,17 @@ public class XRayFreecamPlugin extends JavaPlugin implements Listener {
     /** v1.2.2: quit hook — frees the packet sanitizer's per-player caches. */
     public void onPlayerQuit(UUID id) {
         if (packetEventsManager != null) packetEventsManager.onPlayerQuit(id);
+        if (occlusionEngine != null) { Player pl = getServer().getPlayer(id); if (pl != null) occlusionEngine.clearCache(pl); }
         if (freecamListener != null) freecamListener.clear(id);
     }
 
     public BlockProtector getBlockProtector() {
         return blockProtector;
+    }
+
+    /** v1.3.0: full line-of-sight occlusion oracle used by the packet sanitizer. */
+    public OcclusionEngine getOcclusionEngine() {
+        return occlusionEngine;
     }
 
     public SpectatorManager getSpectatorManager() {

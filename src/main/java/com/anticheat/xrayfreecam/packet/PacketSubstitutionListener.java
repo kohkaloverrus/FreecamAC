@@ -1,6 +1,6 @@
 package com.anticheat.xrayfreecam.packet;
 
-import com.anticheat.xrayfreecam.OreRegistry;
+import com.anticheat.xrayfreecam.OcclusionEngine;
 import com.anticheat.xrayfreecam.XRayFreecamPlugin;
 import com.github.retrooper.packetevents.event.PacketListenerAbstract;
 import com.github.retrooper.packetevents.event.PacketListenerPriority;
@@ -23,50 +23,50 @@ import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 
 import java.lang.reflect.Field;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.WeakHashMap;
 
 /**
- * v1.2.2: ore/cave-focused block substitution via PacketEvents.
+ * v1.3.0: full "unseen world becomes stone" substitution via PacketEvents.
  *
- * What reaches the client now (fixes "антифрикам не работает вовсе"):
- *   - Every candidate block (ores, gems, spawners, storage...) that the
- *     player cannot currently see is remapped to STONE in the outgoing
- *     packet palette — X-Ray texture packs show nothing but stone.
- *   - Naturally generated cave/mineshaft AIR below the player's feet is
- *     remapped to STONE too (via a dedicated air->stone palette entry), so
- *     freecam flying under ground reveals no tunnels or shafts. Air above
- *     eye level stays open — looking into a cave from its entrance works.
- *   - Plain terrain (stone/dirt/deepslate/gravel) is sent UNCHANGED.
- *   - Sections farther than HIDE_RADIUS from the real player position are
- *     hidden wholesale (no scanning at all) — this is what defeats freecam
- *     flight away from the body without spending any CPU on raytraces.
+ * Spec implemented here:
+ *  - EVERY block the client cannot see from the player's real eyes is sent
+ *    as STONE — ores, builds, cave/mine air, water pockets, entities'
+ *    surroundings. No more ore-only allowlist (that was the reason the
+ *    anti-cheat "didn't work at all" against freecam shafts).
+ *  - Beyond {@link OcclusionEngine#OPEN_RADIUS} (30 blocks) unseen areas are
+ *    hidden blindly (no raytraces at all) — cheap and defeats freecam flight.
+ *  - Buried pockets (solid roof >= 5 + walls on all sides) protect from
+ *    POCKET_RADIUS so bases inside hills are sealed even close-up.
+ *  - Sky-accessible positions are NEVER hidden -> no stone blobs above the
+ *    surface behind leaves/trees.
+ *  - Player's own familiar coordinates never hidden; caches reset on relog.
  *
- * Console & performance contract (v1.2.2 fixes):
- *   - ZERO logging on the per-packet path. The old build printed a warning
- *     for every sanitized chunk/block update of every player and flooded
- *     the console. Errors are counted and summarized once per minute by
- *     {@link #reportErrors()} only when they actually happened.
- *   - Per-section decision cache (~0.7 s TTL): chunks are resent constantly
- *     while the player moves; recomputing raytraces each time froze the
- *     main thread (v1.2.1 lag). A cache hit rewrites palettes with zero
- *     world access.
- *   - Strict per-tick raytrace budget bounds worst-case cost.
+ * Chunk sections are decided with a two-level scheme to keep CPU bounded:
+ *   PASS A (cheap, no raytraces): if every non-air palette entry of the
+ *     section is opaque AND the section is beyond OPEN_RADIUS or fully
+ *     buried-under-roof, hide it wholesale by remapping ALL palette entries
+ *     (air included) to stone. This covers the vast majority of underground
+ *     sections instantly.
+ *   PASS B (precise, budgeted): otherwise sample distinct palette states and
+ *     test representative cells with the OcclusionEngine line-of-sight model;
+ *     per-palette-index hide decisions are cached (~TTL) so resends while the
+ *     player moves cost nothing.
+ *
+ * Console contract: ZERO logging on the packet path; errors summarized once
+ * per minute by reportErrors().
  */
 public class PacketSubstitutionListener extends PacketListenerAbstract {
 
-    /** Sections farther than this (blocks) from the player are hidden blindly. */
-    private static final double HIDE_RADIUS = 48.0;
-    /** Max sampled positions per section for the candidate scan. */
-    private static final int MAX_CHECKS = 48;
-    /** Random cave-air probes per underground section. */
-    private static final int CAVE_PROBES = 10;
-    /** Max visibility (raytrace) tests per server tick across all packets. */
-    private static final int TICK_BUDGET = 512;
+    /** Per-tick raytrace budget across all packets (bounds worst case). */
+    private static final int TICK_BUDGET = 4096;
     /** Section decision cache TTL in ms. */
-    private static final long CACHE_TTL = 700L;
+    private static final long CACHE_TTL = 900L;
+    /** Max distinct palette indices precision-tested per section. */
+    private static final int MAX_INDEX_CHECKS = 64;
 
     private final XRayFreecamPlugin plugin;
 
@@ -82,27 +82,20 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
     private volatile long errorCount = 0L;
     private volatile String lastError = null;
 
-    // --- per-player section decision cache (weak keys: auto-cleanup on quit) ---
     private static final class Entry {
         boolean hideAll;      // whole section (incl. air) becomes stone
         boolean[] hideIdx;    // per-palette-index hide decisions (nullable)
-        int airToStone;       // >0: rewrite storage index 0 (air) to this id
+        boolean airToStone;   // air palette entry itself condemned to stone
         long stamp;
 
-        boolean hasWork(int stoneId) {
-            if (hideAll || airToStone > 0) return true;
-            if (hideIdx != null) {
-                for (boolean b : hideIdx) if (b) return true;
-            }
+        boolean hasWork() {
+            if (hideAll) return true;
+            if (airToStone) return true;
+            if (hideIdx != null) for (boolean b : hideIdx) if (b) return true;
             return false;
         }
     }
 
-    /**
-     * Player references inside packet handlers must never be strong map keys
-     * (leak on quit). WeakHashMap<Player,...> is fine because Bukkit Player
-     * implements equals/hashCode consistently with identity while online.
-     */
     private final Map<Player, Map<Long, Entry>> sectionCache = new WeakHashMap<>();
 
     public PacketSubstitutionListener(XRayFreecamPlugin plugin) {
@@ -208,11 +201,12 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
         if (stone == null) return;
         int stoneId = stone.getGlobalId();
 
-        org.bukkit.Location ploc = player.getLocation();
-        double px = ploc.getX(), py = ploc.getY(), pz = ploc.getZ();
+        org.bukkit.Location eye = player.getEyeLocation();
+        double px = eye.getX(), py = eye.getY(), pz = eye.getZ();
         Map<Long, Entry> cache = sectionCache.computeIfAbsent(player, k -> new HashMap<>());
         long now = System.currentTimeMillis();
 
+        OcclusionEngine eng = plugin.getOcclusionEngine();
         boolean modified = false;
         for (int s = 0; s < sections.length; s++) {
             if (!(sections[s] instanceof Chunk_v1_18 c18)) continue;
@@ -227,7 +221,7 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
             Entry e = cache.get(key);
             if (e != null && now - e.stamp < CACHE_TTL) {
                 // Cached decision: rewrite palette WITHOUT any raytrace.
-                if (e.hasWork(stoneId) && applyEntry(dp, lp, e, stoneId)) modified = true;
+                if (e.hasWork() && applyEntry(dp, lp, e, stoneId)) modified = true;
                 continue;
             }
 
@@ -237,94 +231,148 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
 
             Entry ne = new Entry();
             ne.stamp = now;
-            if (dist > HIDE_RADIUS) {
-                // Freecam / far area: hide everything unconditionally.
-                ne.hideAll = true;
+
+            if (dist > OcclusionEngine.OPEN_RADIUS) {
+                // Far area: blind hide unless the WHOLE section has sky access
+                // (surface terrain must stay natural-looking).
+                if (!sectionHasSky(world, baseX, baseZ, baseY)) {
+                    ne.hideAll = true;
+                }
             } else {
-                sanitizeSection(dp, lp, world, baseY, baseX, baseZ, player, stoneId, ne);
+                decideNearSection(dp, lp, world, baseY, baseX, baseZ, player, eng, ne, stoneId);
             }
             cache.put(key, ne);
-            if (ne.hasWork(stoneId) && applyEntry(dp, lp, ne, stoneId)) modified = true;
+            if (cache.size() > 8192) cache.clear();
+            if (ne.hasWork() && applyEntry(dp, lp, ne, stoneId)) modified = true;
         }
 
         if (modified) wrapper.write();
     }
 
-    private static long sectionKey(int baseX, int baseZ, int relY) {
-        return ((long) baseX << 40) ^ ((long) baseZ << 20) ^ (long) relY;
-    }
-
     /**
-     * Precise pass over one near section. Decisions are stored in the entry
-     * (not applied directly) so future resends reuse them for free.
+     * Near-section pass: only cells that could plausibly be seen through an
+     * opening get precise corner-ray tests; everything unseen becomes stone.
      */
-    private void sanitizeSection(DataPalette dp, ListPalette lp, World world,
-                                 int baseY, int baseX, int baseZ,
-                                 Player player, int stoneId, Entry e) {
+    private void decideNearSection(DataPalette dp, ListPalette lp, World world,
+                                   int baseY, int baseX, int baseZ,
+                                   Player player, OcclusionEngine eng, Entry e, int stoneId) {
         int size = lp.size();
-        if (size <= 1) return;
+        if (size <= 1) return; // uniform section: either all air or all one block
         int[] ids = readPaletteIds(lp);
         if (ids == null) return;
 
-        org.bukkit.Location ploc = player.getLocation();
-        double feetY = ploc.getY();
+        // Fast reject: uniform solid rock section (only stone/dirt/deepslate
+        // variants) needs no work — it already looks like the substitute.
+        boolean allOpaqueRock = true;
+        for (int i = 1; i < size; i++) {
+            Material m = materialForGlobalId(ids[i]);
+            if (m == null) { allOpaqueRock = false; break; }
+            if (!isPlainRock(m)) { allOpaqueRock = false; break; }
+        }
+        if (allOpaqueRock && ids[0] == 0 && !usesAirCells(dp)) return;
 
         // Sample first occurrence position per palette index (bounded pass).
         int[] samples = new int[size];
-        java.util.Arrays.fill(samples, -1);
-        boolean usesAir = false;
+        Arrays.fill(samples, -1);
         int found = 0;
         outer:
         for (int y = 0; y < 16; y++) {
             for (int z = 0; z < 16; z++) {
                 for (int x = 0; x < 16; x++) {
                     int idx = dp.get(x, y, z);
-                    if (idx == 0) { usesAir = true; continue; }
                     if (samples[idx] == -1) {
                         samples[idx] = (y << 8) | (z << 4) | x;
-                        if (++found >= MAX_CHECKS) break outer;
+                        if (++found > MAX_INDEX_CHECKS) break outer;
                     }
                 }
             }
         }
 
         boolean[] hide = new boolean[size];
-        for (int i = 1; i < size; i++) {
+        for (int i = 0; i < size; i++) {
             if (samples[i] == -1) continue;
             int id = ids[i];
-            if (id == 0 || id == stoneId) continue;
+            if (id == stoneId) continue;
             Material m = materialForGlobalId(id);
-            if (m == null || !OreRegistry.isCandidate(m)) continue; // plain rock: leave visible
+            if (m == Material.STONE || m == Material.BEDROCK) continue;
+            if (m != null && isPlainRock(m) && i != 0) continue; // rock stays rock
             int p = samples[i];
             int x = p & 15, z = (p >> 4) & 15, y = (p >> 8) & 15;
-            if (!acquireCheck()) break; // per-tick budget exhausted
             Block block = world.getBlockAt(baseX + x, baseY + y, baseZ + z);
-            if (plugin.getBlockProtector().canSee(player, block)) continue;
-            hide[i] = true;
+            if (!acquireCheck()) break; // per-tick budget exhausted: leave visible
+            if (eng.shouldHide(player, block)) hide[i] = true;
         }
         e.hideIdx = hide;
 
-        // Cave-air pass: natural air BELOW the player's feet gets turned to
-        // stone in the packet, hiding mineshaft/cave geometry from freecam.
-        // One confirmed hidden cave sample condemns the whole section's air.
-        if (usesAir && baseY + 16 <= feetY + 8) {
+        // Air cells: hide individually when the sampled cave air is unseen.
+        // If most probes condemn the air, escalate to hiding the whole
+        // section (matches "behind the wall there is only stone").
+        if (samples[0] != -1) {
+            int condemned = 0, probed = 0;
             java.util.Random rnd = sectionRandom;
-            for (int t = 0; t < CAVE_PROBES; t++) {
-                if (!acquireCheck()) break;
+            for (int t = 0; t < 12; t++) {
                 int x = rnd.nextInt(16), z = rnd.nextInt(16), y = rnd.nextInt(16);
-                if (dp.get(x, y, z) != 0) continue; // not air
-                int wy = baseY + y;
-                if (wy >= feetY) continue;          // only below the player
-                Block b = world.getBlockAt(baseX + x, wy, baseZ + z);
-                if (b.getType() != Material.AIR) continue;
-                if (!OreRegistry.isUndergroundCaveAir(b)) continue;
-                if (plugin.getBlockProtector().canSee(player, b)) continue;
-                // Confirmed unseen natural cave here: hide ALL air of this
-                // section by rewriting storage index 0 -> stone.
-                e.airToStone = stoneId;
-                break;
+                if (dp.get(x, y, z) != 0) continue;
+                probed++;
+                if (!acquireCheck()) break;
+                Block b = world.getBlockAt(baseX + x, baseY + y, baseZ + z);
+                if (eng.shouldHide(player, b)) condemned++;
+            }
+            if (probed >= 4 && condemned * 4 >= probed * 3) {
+                e.hideAll = true;
+                e.hideIdx = null;
+            } else if (condemned > 0 && hide.length > 0) {
+                hide[0] = true; // hide just the air palette entry below
+                e.hideIdx = hide;
+                e.airToStone = true;
             }
         }
+    }
+
+    private boolean usesAirCells(DataPalette dp) {
+        // Cheap probe: four corners + center; any air cell means yes.
+        return dp.get(0, 0, 0) == 0 || dp.get(15, 0, 15) == 0
+            || dp.get(0, 15, 15) == 0 || dp.get(8, 8, 8) == 0;
+    }
+
+    /** True for common terrain fillers that need no protection themselves. */
+    private static boolean isPlainRock(Material m) {
+        switch (m) {
+            case STONE: case GRANITE: case DIORITE: case ANDESITE:
+            case DEEPSLATE: case TUFF: case CALCITE:
+            case DIRT: case COARSE_DIRT: case GRASS_BLOCK:
+            case GRAVEL: case CLAY: case SAND: case RED_SAND:
+            case SANDSTONE: case RED_SANDSTONE:
+            case MUD: case ROOTED_DIRT:
+                return true;
+            default:
+                return m.name().endsWith("_SHALE") || m == Material.BLACKSTONE
+                    || m == Material.BASALT || m.name().startsWith("DEEPSLATE_");
+        }
+    }
+
+    /**
+     * Surface guard: sample 4 columns of the section; if any reaches the top
+     * without hitting an opaque block, the section touches the sky and must
+     * NOT be hidden wholesale (prevents stone blobs over trees/leaves).
+     */
+    private boolean sectionHasSky(World world, int baseX, int baseZ, int baseY) {
+        int[][] cols = {{baseX + 1, baseZ + 1}, {baseX + 14, baseZ + 1},
+                        {baseX + 1, baseZ + 14}, {baseX + 14, baseZ + 14}};
+        for (int[] c : cols) {
+            boolean sky = true;
+            for (int y = baseY + 16; y < world.getMaxHeight(); y++) {
+                if (OcclusionEngine.isOpaque(world.getBlockAt(c[0], y, c[1]).getType())) {
+                    sky = false; break;
+                }
+            }
+            if (sky) return true;
+        }
+        return false;
+    }
+
+    private static long sectionKey(int baseX, int baseZ, int relY) {
+        return ((long) baseX << 40) ^ ((long) baseZ << 20) ^ (long) relY;
     }
 
     private final java.util.Random sectionRandom = new java.util.Random();
@@ -341,13 +389,13 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
         boolean changed = false;
 
         if (e.hideAll) {
-            for (int i = 1; i < size; i++) {
+            for (int i = 0; i < size; i++) {
                 if (ids[i] != 0 && ids[i] != stoneId) {
                     ids[i] = stoneId;
                     changed = true;
                 }
             }
-            if (e.airToStone <= 0) e.airToStone = stoneId; // hideAll covers air too
+            changed |= rewriteAirStorage(dp, stoneId);
         } else if (e.hideIdx != null) {
             for (int i = 1; i < size && i < e.hideIdx.length; i++) {
                 if (e.hideIdx[i] && ids[i] != 0 && ids[i] != stoneId) {
@@ -355,10 +403,9 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
                     changed = true;
                 }
             }
-        }
-
-        if (e.airToStone > 0) {
-            changed |= rewriteAirStorage(dp, e.airToStone);
+            if (e.airToStone && e.hideIdx.length > 0 && e.hideIdx[0]) {
+                changed |= rewriteAirStorage(dp, stoneId);
+            }
         }
         return changed;
     }
@@ -416,9 +463,8 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
         Vector3i pos = wrapper.getBlockPosition();
         World world = player.getWorld();
         Block block = world.getBlockAt(pos.getX(), pos.getY(), pos.getZ());
-        if (!isHidingTarget(block, player)) return;
+        if (!plugin.getOcclusionEngine().shouldHide(player, block)) return;
         if (!acquireCheck()) return;
-        if (plugin.getBlockProtector().canSee(player, block)) return;
         wrapper.setBlockID(stoneIdFor(event.getUser().getClientVersion()));
         wrapper.write();
     }
@@ -429,6 +475,7 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
         int baseX = chunkPos.getX() << 4;
         int baseZ = chunkPos.getZ() << 4;
         World world = player.getWorld();
+        OcclusionEngine eng = plugin.getOcclusionEngine();
         boolean changed = false;
         int stoneId = stoneIdFor(event.getUser().getClientVersion());
         for (var record : wrapper.getBlocks()) {
@@ -436,23 +483,12 @@ public class PacketSubstitutionListener extends PacketListenerAbstract {
             int wy = record.getY();
             int wz = baseZ + record.getZ();
             Block block = world.getBlockAt(wx, wy, wz);
-            if (!isHidingTarget(block, player)) continue;
             if (!acquireCheck()) break;
-            if (plugin.getBlockProtector().canSee(player, block)) continue;
+            if (!eng.shouldHide(player, block)) continue;
             record.setBlockId(stoneId);
             changed = true;
         }
         if (changed) wrapper.write();
-    }
-
-    /** Target = ore-like candidate, OR underground cave air below the player. */
-    private boolean isHidingTarget(Block block, Player player) {
-        Material type = block.getType();
-        if (type == Material.AIR) {
-            return block.getY() < player.getLocation().getY()
-                    && OreRegistry.isUndergroundCaveAir(block);
-        }
-        return OreRegistry.isCandidate(type);
     }
 
     // ------------------------------------------------------------------

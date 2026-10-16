@@ -36,29 +36,12 @@ public class BlockProtector {
         // survival/adventure/creative players whose client can be spoofed.
         if (plugin.getSpectatorManager().isExempt(player)) return false;
 
-        Material type = block.getType();
-
-        // v1.2.2: ONLY hide what cheats actually hunt — ores/storage/spawners
-        // and natural cave air below the player. Plain stone/dirt/gravel is
-        // left untouched: it looks like the substitution block anyway and
-        // scanning all of it was the console-spam + lag source.
-        boolean target;
-        if (type == Material.AIR) {
-            target = block.getY() < player.getLocation().getY()
-                    && OreRegistry.isUndergroundCaveAir(block);
-        } else {
-            target = OreRegistry.isCandidate(type);
-        }
-        if (!target) return false;
-
-        // Rule 2: player familiar area — never touch
-        if (VisitedBlocksManager.isPlayerFamiliarArea(player, block)) return false;
-
-        // Rule 4/5: if the player can directly see this block, don't replace it
-        if (canSee(player, block)) return false;
-
-        // Otherwise — hide it (stone)
-        return true;
+        // v1.3.0: full occlusion model — EVERYTHING the client cannot see
+        // from the player's real eyes becomes stone (ores, builds, cave air,
+        // hidden pockets), with surface/visited/nearby exemptions handled
+        // inside OcclusionEngine. The old ore-only allowlist is what made
+        // freecam shafts completely unprotected.
+        return plugin.getOcclusionEngine().shouldHide(player, block);
     }
 
     /**

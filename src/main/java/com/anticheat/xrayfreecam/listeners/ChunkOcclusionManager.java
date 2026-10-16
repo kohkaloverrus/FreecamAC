@@ -54,7 +54,8 @@ public class ChunkOcclusionManager implements Listener {
 
     @EventHandler
     public void onQuit(PlayerQuitEvent event) {
-        // nothing per-player to clean up anymore (v1.1.1)
+        // v1.2.2: free the packet sanitizer's per-section decision cache.
+        plugin.onPlayerQuit(event.getPlayer().getUniqueId());
     }
 
     /**

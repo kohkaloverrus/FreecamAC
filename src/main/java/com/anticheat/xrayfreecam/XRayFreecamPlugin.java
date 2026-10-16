@@ -48,6 +48,9 @@ public class XRayFreecamPlugin extends JavaPlugin implements Listener {
         saveDefaultConfig();
         loadConfig();
 
+        // v1.2.2: extend the ore candidate list from the server's #minecraft:ores tag
+        com.anticheat.xrayfreecam.OreRegistry.initFromTags(this);
+
         // v1.2.0: PacketEvents must be initialized BEFORE anything else so
         // its Netty handlers are injected before any player connects.
         this.packetEventsManager = new com.anticheat.xrayfreecam.packet.PacketEventsManager(this);
@@ -70,9 +73,21 @@ public class XRayFreecamPlugin extends JavaPlugin implements Listener {
             occlusionManager.apply(p);
         }
 
-        getLogger().info("XRayFreecamAntiCheat v1.2.0 enabled. Protection radius: " + farDistance
-                + " blocks. Send radius: " + sendRadiusChunks + " chunks (unseen chunks are NOT sent to clients).");
+        // v1.2.2: silent housekeeping — at most ONE console line per minute
+        // and only when something actually happened (no per-player spam).
+        getServer().getScheduler().runTaskTimer(this, () -> {
+            freecamListener.tick();
+            packetEventsManager.reportErrors();
+        }, 20L * 60, 20L * 60);
+
+        getLogger().info("XRayFreecamAntiCheat v1.2.2 enabled. Ores & unseen cave air below the"
+                + " player are replaced with stone in outgoing packets; everything beyond "
+                + HIDE_RADIUS_BLOCKS + " blocks of the real position is hidden wholesale"
+                + " (freecam sees nothing). Send radius: " + sendRadiusChunks + " chunks.");
     }
+
+    /** Radius (blocks) within which near-position data is scanned precisely. */
+    public static final int HIDE_RADIUS_BLOCKS = 48;
 
     @Override
     public void onDisable() {
@@ -265,6 +280,12 @@ public class XRayFreecamPlugin extends JavaPlugin implements Listener {
 
     public com.anticheat.xrayfreecam.packet.PacketEventsManager getPacketEventsManager() {
         return packetEventsManager;
+    }
+
+    /** v1.2.2: quit hook — frees the packet sanitizer's per-player caches. */
+    public void onPlayerQuit(UUID id) {
+        if (packetEventsManager != null) packetEventsManager.onPlayerQuit(id);
+        if (freecamListener != null) freecamListener.clear(id);
     }
 
     public BlockProtector getBlockProtector() {

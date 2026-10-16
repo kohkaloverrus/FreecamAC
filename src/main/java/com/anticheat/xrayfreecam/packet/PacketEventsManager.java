@@ -92,6 +92,16 @@ public final class PacketEventsManager {
         available = false;
     }
 
+    /** Once-per-minute error summary from the packet listener (silent otherwise). */
+    public void reportErrors() {
+        if (substitutionListener != null) substitutionListener.reportErrors();
+    }
+
+    /** Drop per-player sanitizer caches when someone quits. */
+    public void onPlayerQuit(java.util.UUID id) {
+        if (substitutionListener != null) substitutionListener.clearCache(id);
+    }
+
     public boolean isAvailable() {
         return available;
     }

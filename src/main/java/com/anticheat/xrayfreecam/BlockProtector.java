@@ -37,35 +37,25 @@ public class BlockProtector {
         if (plugin.getSpectatorManager().isExempt(player)) return false;
 
         Material type = block.getType();
-        if (type.isAir()) return false;
+
+        // v1.2.2: ONLY hide what cheats actually hunt — ores/storage/spawners
+        // and natural cave air below the player. Plain stone/dirt/gravel is
+        // left untouched: it looks like the substitution block anyway and
+        // scanning all of it was the console-spam + lag source.
+        boolean target;
+        if (type == Material.AIR) {
+            target = block.getY() < player.getLocation().getY()
+                    && OreRegistry.isUndergroundCaveAir(block);
+        } else {
+            target = OreRegistry.isCandidate(type);
+        }
+        if (!target) return false;
 
         // Rule 2: player familiar area — never touch
         if (VisitedBlocksManager.isPlayerFamiliarArea(player, block)) return false;
 
-        // Rule 3: never place stone behind surface leaves/wood
-        if (VisitedBlocksManager.isSurfaceVegetation(block)) return false;
-
-        double distance = player.getLocation().distance(block.getLocation());
-
-        // Rule 1: distance thresholds
-        boolean surroundedByWalls = isSurroundedBySolidWalls(block);
-        double threshold;
-        if (surroundedByWalls) {
-            // Behind solid walls: protect starting at 5 blocks horizontally / 10 blocks down
-            threshold = 5.0;
-            double dy = player.getLocation().getY() - block.getLocation().getY();
-            if (dy > 0 && distance < 10.0) {
-                // within 10 blocks below the player and inside walls -> still protect
-                threshold = Math.min(threshold, distance);
-            }
-        } else {
-            threshold = plugin.getFarDistance(); // default 30
-        }
-
-        if (distance < threshold) return false;
-
         // Rule 4/5: if the player can directly see this block, don't replace it
-        if (canPlayerSeeBlock(player, block)) return false;
+        if (canSee(player, block)) return false;
 
         // Otherwise — hide it (stone)
         return true;
@@ -73,8 +63,9 @@ public class BlockProtector {
 
     /**
      * Simple line-of-sight check from player eyes to block center.
+     * Public: used by the packet sanitizer as the single visibility oracle.
      */
-    private boolean canPlayerSeeBlock(Player player, Block block) {
+    public boolean canSee(Player player, Block block) {
         var eye = player.getEyeLocation().toVector();
         var target = block.getLocation().add(0.5, 0.5, 0.5).toVector();
         var dir = target.clone().subtract(eye);

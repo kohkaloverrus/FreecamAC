@@ -22,21 +22,10 @@ public class ChunkListener implements Listener {
         this.plugin = plugin;
     }
 
-    @EventHandler
-    public void onChunkLoad(ChunkLoadEvent event) {
-        if (!plugin.isProtectionEnabled()) return;
-
-        for (Player player : event.getChunk().getWorld().getPlayers()) {
-            // Spectators & bypass staff never receive stone substitution
-            if (plugin.getSpectatorManager().isExempt(player)) continue;
-
-            double distance = player.getLocation()
-                    .distance(event.getChunk().getBlock(8, 64, 8).getLocation());
-            if (distance > (plugin.getViewDistance() + 2) * 16.0) continue;
-
-            plugin.getBlockProtector().sanitizeChunk(player, event.getChunk());
-        }
-    }
+    // NOTE (v1.1.1): chunk sanitization is handled exclusively by
+    // ChunkOcclusionManager.onChunkLoad. Running it here as well caused
+    // duplicate full-chunk scans and refresh storms that froze chunk delivery
+    // ("вечная загрузка территории"). Do not re-add a ChunkLoadEvent handler.
 
     /**
      * When a player switches INTO spectator mode, immediately resend chunks

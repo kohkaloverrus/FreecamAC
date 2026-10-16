@@ -43,9 +43,6 @@ public class ChunkOcclusionManager implements Listener {
 
     private final XRayFreecamPlugin plugin;
 
-    // Remembered natural send distances so we can restore them for exempt players
-    private final Map<UUID, Integer> originalSendDistance = new HashMap<>();
-
     public ChunkOcclusionManager(XRayFreecamPlugin plugin) {
         this.plugin = plugin;
     }
@@ -57,34 +54,42 @@ public class ChunkOcclusionManager implements Listener {
 
     @EventHandler
     public void onQuit(PlayerQuitEvent event) {
-        originalSendDistance.remove(event.getPlayer().getUniqueId());
+        // nothing per-player to clean up anymore (v1.1.1)
     }
 
     /**
      * Clamp the outgoing chunk radius for one player. Called on join and via
      * /anticheat occlude|apply. Safe to call repeatedly.
+     *
+     * v1.1.1 fix: we NEVER lower a player's send distance below what their own
+     * client requested. Shrinking the server-side send radius below the client
+     * view distance makes the client wait forever for chunks it will never
+     * receive -> infinite "Downloading terrain" and console errors. If the
+     * configured protection radius is smaller than the client's request, we
+     * skip the clamp entirely (block-level stone sanitization still applies).
      */
     public void apply(Player player) {
         UUID id = player.getUniqueId();
-        if (!originalSendDistance.containsKey(id)) {
-            try {
-                originalSendDistance.put(id, player.getSendViewDistance());
-            } catch (Throwable ignored) {
-                originalSendDistance.put(id, plugin.getViewDistance());
-            }
-        }
 
         int target;
-        if (!plugin.isProtectionEnabled() || plugin.getSpectatorManager().isExempt(player)) {
-            // Restore full view for spectators/staff — they legitimately see everything
-            Integer orig = originalSendDistance.get(id);
-            target = orig != null ? orig : plugin.getViewDistance();
+        boolean exempt = !plugin.isProtectionEnabled() || plugin.getSpectatorManager().isExempt(player);
+
+        if (exempt) {
+            // Restore the distance the CLIENT itself asked for (vanilla behaviour).
+            // Using a remembered value here could leave the player stuck with a
+            // reduced radius after gamemode changes.
+            target = safeClientViewDistance(player);
+            if (target <= 0) target = plugin.getServer().getViewDistance();
         } else {
-            target = plugin.getSendRadiusChunks();
             int clientVd = safeClientViewDistance(player);
-            // Never advertise less than the client already has loaded; shrinking
-            // below the client request causes visual glitches. We only CAP it.
-            if (clientVd > 0 && clientVd < target) target = clientVd;
+            if (clientVd < 0) clientVd = plugin.getServer().getViewDistance();
+            target = Math.min(plugin.getSendRadiusChunks(), clientVd);
+            // Protection radius must not be SMALLER than the client request,
+            // otherwise the client would hang loading invisible chunks.
+            // In that case we do not clamp at all.
+            if (target >= clientVd) {
+                return;
+            }
         }
 
         try {
@@ -93,6 +98,21 @@ public class ChunkOcclusionManager implements Listener {
             }
         } catch (Throwable t) {
             plugin.getLogger().warning("setSendViewDistance failed for " + player.getName() + ": " + t);
+        }
+    }
+
+    /**
+     * Fully restore a player's natural (client-requested) send distance.
+     */
+    public void restore(Player player) {
+        int clientVd = safeClientViewDistance(player);
+        if (clientVd <= 0) clientVd = plugin.getServer().getViewDistance();
+        try {
+            if (player.getSendViewDistance() != clientVd) {
+                player.setSendViewDistance(clientVd);
+            }
+        } catch (Throwable t) {
+            plugin.getLogger().warning("send-distance restore failed for " + player.getName() + ": " + t);
         }
     }
 
@@ -114,8 +134,8 @@ public class ChunkOcclusionManager implements Listener {
     @EventHandler
     public void onChunkLoad(ChunkLoadEvent event) {
         if (!plugin.isProtectionEnabled()) return;
-        Chunk chunk = event.getChunk();
-        World world = chunk.getWorld();
+        final Chunk chunk = event.getChunk();
+        final World world = chunk.getWorld();
 
         boolean anyProtected = false;
         for (Player player : world.getPlayers()) {
@@ -127,14 +147,25 @@ public class ChunkOcclusionManager implements Listener {
                 anyProtected = true;
             }
         }
-        if (anyProtected) {
-            // Re-send the chunk to everyone currently seeing it so clients
-            // that already received the raw data get the corrected copy.
-            try {
-                world.refreshChunk(chunk.getX(), chunk.getZ());
-            } catch (Throwable ignored) {
-                // refresh may fail if the chunk was unloaded again this tick
-            }
+        if (!anyProtected) return;
+
+        // v1.1.1: refresh only chunks we actually modified AND that are NOT
+        // fresh load events (a freshly loaded chunk has not been sent to any
+        // client yet, refreshing it would unload/reload it -> infinite loop of
+        // ChunkLoadEvents and "Downloading terrain" forever on the client).
+        final int cx = chunk.getX();
+        final int cz = chunk.getZ();
+        if (plugin.markRefreshPending(world, cx, cz)) {
+            plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+                try {
+                    if (world.isChunkLoaded(cx, cz) && !plugin.wasFreshlyLoaded(world, cx, cz)) {
+                        world.refreshChunk(cx, cz);
+                    }
+                } catch (Throwable ignored) {
+                } finally {
+                    plugin.clearRefreshPending(world, cx, cz);
+                }
+            }, 2L);
         }
     }
 
@@ -159,9 +190,5 @@ public class ChunkOcclusionManager implements Listener {
                 }
             }
         }
-    }
-
-    public Map<UUID, Integer> getOriginalSendDistance() {
-        return originalSendDistance;
     }
 }

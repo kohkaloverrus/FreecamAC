@@ -51,34 +51,12 @@ public class ChunkListener implements Listener {
                 || plugin.getSpectatorManager().isFlagged(event.getPlayer().getUniqueId());
 
         if (wasExempt != willBeExempt) {
-            Player p = event.getPlayer();
-            // Clear cached replacements; Paper resends chunks when visibility changes.
-            plugin.getPlayerReplacements().put(p.getUniqueId(), new HashMap<>());
-            // Force a chunk refresh around the player so the client gets fresh data
-            // with the correct (sanitized or raw) block state.
-            final int viewDist = Math.min(plugin.getViewDistance(), 6);
-            final org.bukkit.Chunk center = p.getLocation().getChunk();
-            // Refresh on next tick, after the game mode change has been applied
-            plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
-                for (int dx = -viewDist; dx <= viewDist; dx++) {
-                    for (int dz = -viewDist; dz <= viewDist; dz++) {
-                        org.bukkit.Chunk c = p.getWorld().getChunkAt(
-                                center.getX() + dx, center.getZ() + dz);
-                        if (!c.isLoaded()) continue;
-                        try {
-                            // Paper API: per-player chunk visibility toggle
-                            Player.class.getMethod("hideChunk", org.bukkit.Chunk.class)
-                                    .invoke(p, c);
-                            Player.class.getMethod("showChunk", org.bukkit.Chunk.class)
-                                    .invoke(p, c);
-                        } catch (ReflectiveOperationException ignored) {
-                            // Older/other API without hide/showChunk: the player's
-                            // own chunk-view refresh on gamemode change is enough;
-                            // replacements cache was already cleared above.
-                        }
-                    }
-                }
-            }, 1L);
+            final Player p = event.getPlayer();
+            // v1.1.0: clear cached replacements, re-apply send-distance occlusion
+            // and force-refresh surrounding chunks so the client immediately gets
+            // either the full raw world (spectator) or the protected copy.
+            plugin.getServer().getScheduler().runTaskLater(plugin, () ->
+                    plugin.getOcclusionManager().resync(p), 1L);
         }
     }
 
@@ -87,6 +65,8 @@ public class ChunkListener implements Listener {
         // Loaded chunks are dropped on re-login -> reset cached replacements
         plugin.getPlayerReplacements()
               .put(event.getPlayer().getUniqueId(), new HashMap<>());
+        // Occlusion is applied by ChunkOcclusionManager.onJoin as well;
+        // nothing extra needed here.
     }
 
     @EventHandler
